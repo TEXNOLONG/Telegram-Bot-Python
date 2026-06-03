@@ -3,5 +3,14 @@
     7307275806,
     8353338744
   ],
-  "total_analyses": 2
+  "total_analyses": 3,
+  "history": {
+    "7307275806": [
+      {
+        "url": "https://yakuipt.ru/",
+        "score": 10,
+        "date": "03.06.2026 18:28"
+      }
+    ]
+  }
 }
