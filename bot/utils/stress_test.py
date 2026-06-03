@@ -1,97 +1,84 @@
 import asyncio
 import time
-import hashlib
 import aiohttp
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-
-from bot.config import BOT_TOKEN
-
-
-def get_verify_code(user_id: int) -> str:
-    raw = f"{user_id}:{BOT_TOKEN}:verify"
-    return hashlib.sha256(raw.encode()).hexdigest()[:14]
-
-
-async def check_ownership(url: str, code: str) -> tuple[bool, str]:
-    """Check if user has placed the verify meta tag on the given URL."""
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; SiteBot/1.0)"}
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as resp:
-                if resp.status >= 400:
-                    return False, f"Сайт вернул статус {resp.status}"
-                html = await resp.text(errors="replace")
-                soup = BeautifulSoup(html, "lxml")
-                meta = soup.find("meta", attrs={"name": "site-owner", "content": code})
-                if meta:
-                    return True, "ok"
-                return False, "Тег не найден"
-    except aiohttp.ClientConnectorError:
-        return False, "Не удалось подключиться к сайту"
-    except asyncio.TimeoutError:
-        return False, "Сайт не отвечает (таймаут 10с)"
-    except Exception as e:
-        return False, f"Ошибка: {type(e).__name__}"
+from html import escape
 
 
 async def run_stress_test(
     url: str,
-    total: int = 50,
-    concurrency: int = 10,
+    total: int = 100,
+    concurrency: int = 50,
     progress_cb=None,
 ) -> dict:
-    """
-    Send `total` requests with up to `concurrency` at once.
-    Calls progress_cb(done, total) every 10 requests if provided.
-    """
     results = []
     semaphore = asyncio.Semaphore(concurrency)
     done_count = 0
     lock = asyncio.Lock()
+    start_wall = time.monotonic()
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; StressBot/1.0; +check-ownership)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; LoadBot/2.0)",
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+    }
 
-    async def one_request(session: aiohttp.ClientSession, idx: int):
+    async def one_request(session: aiohttp.ClientSession) -> dict:
         nonlocal done_count
         async with semaphore:
             t0 = time.monotonic()
             try:
                 async with session.get(
                     url,
-                    timeout=aiohttp.ClientTimeout(total=10),
+                    timeout=aiohttp.ClientTimeout(total=15, connect=5),
                     allow_redirects=True,
+                    max_redirects=3,
                 ) as resp:
+                    # drain body so connection returns to pool
                     await resp.read()
                     elapsed = time.monotonic() - t0
-                    return {"ok": True, "status": resp.status, "time": elapsed}
+                    return {"ok": resp.status < 400, "status": resp.status, "time": elapsed}
             except asyncio.TimeoutError:
                 return {"ok": False, "error": "timeout", "time": time.monotonic() - t0}
+            except aiohttp.ClientConnectorError:
+                return {"ok": False, "error": "connect_error", "time": time.monotonic() - t0}
+            except aiohttp.ClientError as e:
+                return {"ok": False, "error": type(e).__name__, "time": time.monotonic() - t0}
             except Exception as e:
                 return {"ok": False, "error": type(e).__name__, "time": time.monotonic() - t0}
             finally:
                 async with lock:
                     done_count += 1
-                    if progress_cb and done_count % 10 == 0:
+                    step = max(50, total // 20)
+                    if progress_cb and done_count % step == 0:
                         await progress_cb(done_count, total)
 
-    connector = aiohttp.TCPConnector(limit=concurrency)
-    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-        tasks = [one_request(session, i) for i in range(total)]
-        results = await asyncio.gather(*tasks)
+    connector = aiohttp.TCPConnector(
+        limit=concurrency,
+        limit_per_host=concurrency,
+        ttl_dns_cache=300,
+        enable_cleanup_closed=True,
+        force_close=False,
+    )
+
+    async with aiohttp.ClientSession(
+        headers=headers,
+        connector=connector,
+        connector_owner=True,
+    ) as session:
+        tasks = [one_request(session) for _ in range(total)]
+        results = list(await asyncio.gather(*tasks, return_exceptions=False))
+
+    wall_time = time.monotonic() - start_wall
 
     times = sorted(r["time"] for r in results)
-    success = [r for r in results if r.get("ok") and r.get("status", 0) < 400]
-    failed = [r for r in results if not r.get("ok") or r.get("status", 0) >= 400]
+    success = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
     n = len(times)
 
-    def percentile(data, p):
-        idx = min(int(len(data) * p / 100), len(data) - 1)
-        return data[idx]
-
-    total_time = sum(times)
-    avg = total_time / n if n else 0
-    rps = n / total_time * concurrency if total_time > 0 else 0
+    def pct(p: float) -> float:
+        idx = min(int(n * p / 100), n - 1)
+        return times[idx]
 
     status_counts: dict[int, int] = {}
     for r in results:
@@ -110,56 +97,62 @@ async def run_stress_test(
         "success": len(success),
         "failed": len(failed),
         "success_rate": len(success) / total * 100 if total else 0,
-        "avg_time": avg,
-        "min_time": min(times) if times else 0,
-        "max_time": max(times) if times else 0,
-        "p50": percentile(times, 50),
-        "p95": percentile(times, 95),
-        "p99": percentile(times, 99),
-        "rps": rps,
+        "wall_time": wall_time,
+        "rps": total / wall_time if wall_time > 0 else 0,
+        "avg_time": sum(times) / n if n else 0,
+        "min_time": times[0] if times else 0,
+        "max_time": times[-1] if times else 0,
+        "p50": pct(50),
+        "p75": pct(75),
+        "p95": pct(95),
+        "p99": pct(99),
         "status_counts": status_counts,
         "error_types": error_types,
     }
 
 
 def format_stress_report(url: str, data: dict) -> str:
-    from html import escape
     sr = data["success_rate"]
     if sr >= 99:
-        health = "🟢 Отлично"
+        health = "🟢 Сервер держит нагрузку отлично"
     elif sr >= 90:
-        health = "🟡 Хорошо"
+        health = "🟡 Небольшие потери под нагрузкой"
     elif sr >= 70:
-        health = "🟠 Слабо"
+        health = "🟠 Сервер справляется с трудом"
     else:
-        health = "🔴 Критично"
+        health = "🔴 Сервер не справился с нагрузкой"
+
+    rps = data["rps"]
+    wall = data["wall_time"]
 
     lines = [
         f"🔥 <b>Стресс-тест завершён</b>",
         f"<code>{escape(url)}</code>\n",
-        f"📊 <b>Нагрузка:</b> {data['total']} запросов, {data['concurrency']} параллельно\n",
-        f"<b>Результаты:</b>",
-        f"  ✅ Успешных: <b>{data['success']}</b> ({sr:.1f}%)",
-        f"  ❌ Ошибок:   <b>{data['failed']}</b>",
-        f"  🏃 RPS:       <b>~{data['rps']:.1f}</b> запросов/сек\n",
-        f"<b>Время ответа:</b>",
-        f"  ⚡ Минимум:  <b>{data['min_time']*1000:.0f} мс</b>",
-        f"  📈 Среднее:  <b>{data['avg_time']*1000:.0f} мс</b>",
-        f"  📊 P50:      <b>{data['p50']*1000:.0f} мс</b>",
-        f"  📊 P95:      <b>{data['p95']*1000:.0f} мс</b>",
-        f"  📊 P99:      <b>{data['p99']*1000:.0f} мс</b>",
-        f"  🐢 Максимум: <b>{data['max_time']*1000:.0f} мс</b>",
+        f"⚙️ <b>Параметры:</b> {data['total']:,} запросов • {data['concurrency']} потоков",
+        f"⏱ <b>Время теста:</b> {wall:.1f} сек\n",
+        f"<b>Результат:</b>",
+        f"  ✅ Успешных:  <b>{data['success']:,}</b>  ({sr:.1f}%)",
+        f"  ❌ Ошибок:    <b>{data['failed']:,}</b>",
+        f"  🚀 RPS:       <b>{rps:.0f}</b> запр/сек\n",
+        f"<b>Время отклика:</b>",
+        f"  ⚡ Мин:   <b>{data['min_time']*1000:.0f} мс</b>",
+        f"  📊 P50:   <b>{data['p50']*1000:.0f} мс</b>",
+        f"  📊 P75:   <b>{data['p75']*1000:.0f} мс</b>",
+        f"  📊 P95:   <b>{data['p95']*1000:.0f} мс</b>",
+        f"  📊 P99:   <b>{data['p99']*1000:.0f} мс</b>",
+        f"  🐢 Макс:  <b>{data['max_time']*1000:.0f} мс</b>",
     ]
 
     if data["status_counts"]:
         lines.append("\n<b>HTTP статусы:</b>")
         for code, cnt in sorted(data["status_counts"].items()):
-            lines.append(f"  • {code}: {cnt}×")
+            icon = "🟢" if code < 300 else "🟡" if code < 400 else "🔴"
+            lines.append(f"  {icon} {code}: {cnt:,}×")
 
     if data["error_types"]:
-        lines.append("\n<b>Типы ошибок:</b>")
-        for err, cnt in data["error_types"].items():
-            lines.append(f"  • {err}: {cnt}×")
+        lines.append("\n<b>Ошибки:</b>")
+        for err, cnt in sorted(data["error_types"].items(), key=lambda x: -x[1]):
+            lines.append(f"  ⚠️ {escape(err)}: {cnt:,}×")
 
-    lines.append(f"\n{health} — итоговая оценка нагрузки")
+    lines.append(f"\n{health}")
     return "\n".join(lines)

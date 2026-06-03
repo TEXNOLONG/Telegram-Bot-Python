@@ -16,11 +16,15 @@ def main_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Анализировать сайт", callback_data="analyze")],
         [
-            InlineKeyboardButton(text=sub_label, callback_data="sub"),
-            InlineKeyboardButton(text="📋 История", callback_data="history"),
+            InlineKeyboardButton(text="🔐 SSL-сертификат", callback_data="ssl"),
+            InlineKeyboardButton(text="🌐 DNS / IP", callback_data="dns"),
         ],
         [
             InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
+            InlineKeyboardButton(text="📋 История", callback_data="history"),
+        ],
+        [
+            InlineKeyboardButton(text=sub_label, callback_data="sub"),
             InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"),
         ],
     ])
@@ -37,13 +41,14 @@ def back_to_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Анализировать снова", callback_data="analyze")],
         [
-            InlineKeyboardButton(text=sub_label, callback_data="sub"),
-            InlineKeyboardButton(text="📋 История", callback_data="history"),
+            InlineKeyboardButton(text="🔐 SSL-сертификат", callback_data="ssl"),
+            InlineKeyboardButton(text="🌐 DNS / IP", callback_data="dns"),
         ],
         [
             InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
-            InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"),
+            InlineKeyboardButton(text=sub_label, callback_data="sub"),
         ],
+        [InlineKeyboardButton(text="◀️ Меню", callback_data="menu")],
     ])
 
 
@@ -56,8 +61,10 @@ def stress_verify_kb(user_id: int) -> InlineKeyboardMarkup:
 
 def stress_start_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔥 50 запросов (стандарт)", callback_data="stress_run:50:10")],
-        [InlineKeyboardButton(text="💥 100 запросов (усиленный)", callback_data="stress_run:100:20")],
+        [InlineKeyboardButton(text="🔥  500 запросов  •  50 потоков",   callback_data="stress_run:500:50")],
+        [InlineKeyboardButton(text="💥 1 000 запросов  • 100 потоков",   callback_data="stress_run:1000:100")],
+        [InlineKeyboardButton(text="⚡ 5 000 запросов  • 200 потоков",   callback_data="stress_run:5000:200")],
+        [InlineKeyboardButton(text="🌋 10 000 запросов • 500 потоков",   callback_data="stress_run:10000:500")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
     ])
 

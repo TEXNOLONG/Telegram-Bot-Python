@@ -4,13 +4,13 @@
       "first_name": "𝚡𝚊𝚛𝚒𝚘𝚗 𝚐𝚘𝚍𝚕𝚒𝚔𝚎 I 𝙍𝙆𝘾",
       "username": "miraveta",
       "first_seen": "2026-06-03T18:48:38",
-      "last_active": "2026-06-03T18:56:23",
+      "last_active": "2026-06-03T19:01:33",
       "banned": false,
       "sub_expires": "2026-09-01T18:56:19",
       "sub_plan": "quarter",
       "free_uses_today": 0,
       "free_uses_date": "",
-      "total_analyses": 0
+      "total_analyses": 1
     },
     "8353338744": {
       "first_name": "",
@@ -37,9 +37,14 @@
       "total_analyses": 0
     }
   },
-  "total_analyses": 5,
+  "total_analyses": 6,
   "history": {
     "7307275806": [
+      {
+        "url": "https://yakuipt.ru/",
+        "score": 10,
+        "date": "03.06.2026 19:01"
+      },
       {
         "url": "https://yakuipt.ru/",
         "score": 10,

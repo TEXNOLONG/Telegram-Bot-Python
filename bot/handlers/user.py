@@ -15,6 +15,8 @@ from bot.keyboards import (
 )
 from bot.utils.site_analyzer import analyze_site, format_report, _calc_score
 from bot.utils.stress_test import run_stress_test, format_stress_report
+from bot.utils.ssl_checker import check_ssl, format_ssl_report
+from bot.utils.dns_checker import dns_lookup, check_ports, COMMON_PORTS, format_dns_report
 from bot.utils.helpers import safe_edit
 from bot.storage import storage
 
@@ -25,6 +27,8 @@ class UserState(StatesGroup):
     waiting_for_url = State()
     stress_waiting_url = State()
     stress_choosing_intensity = State()
+    ssl_waiting_url = State()
+    dns_waiting_url = State()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -268,15 +272,89 @@ async def cb_help(callback: CallbackQuery):
         "• Технологии: CMS, фреймворки, сервер\n"
         "• Аналитика: GA, GTM, Яндекс.Метрика\n"
         "• robots.txt, sitemap.xml, favicon, HTTPS\n\n"
+        "<b>🔐 SSL-сертификат:</b>\n"
+        "• Срок действия, кому выдан, кем подписан\n"
+        "• Протокол (TLS 1.2/1.3), шифр\n"
+        "• Все домены (SAN)\n\n"
+        "<b>🌐 DNS / IP:</b>\n"
+        "• IP-адреса, страна, хостинг, ASN\n"
+        "• Сканирование открытых портов\n\n"
         "<b>🔥 Стресс-тест:</b>\n"
-        "• До 100 параллельных запросов\n"
-        "• Статистика: RPS, P50/P95/P99, ошибки\n\n"
+        "• До 10 000 запросов / 500 потоков\n"
+        "• RPS, P50/P95/P99, статусы, ошибки\n\n"
         f"🆓 Бесплатно: <b>{limit} анализов/день</b>\n"
         "💎 Подписка: безлимитно + стресс-тест\n\n"
         "По вопросам: @hayder_projectx",
         reply_markup=main_menu_kb(has_sub),
     )
     await callback.answer()
+
+
+# ─── SSL checker ──────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "ssl")
+async def cb_ssl(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(UserState.ssl_waiting_url)
+    await safe_edit(
+        callback,
+        "🔐 <b>Проверка SSL-сертификата</b>\n\n"
+        "Отправь домен или ссылку:\n"
+        "<code>example.com</code> или <code>https://example.com</code>",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(UserState.ssl_waiting_url)
+async def process_ssl_url(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    hostname = raw.removeprefix("https://").removeprefix("http://").split("/")[0].split("?")[0]
+
+    if not hostname or "." not in hostname:
+        await message.answer("❌ Введи корректный домен, например: <code>example.com</code>", reply_markup=cancel_kb())
+        return
+
+    await state.clear()
+    wait = await message.answer(f"🔐 Проверяю SSL для <code>{escape(hostname)}</code>…")
+    data = await check_ssl(hostname)
+    await wait.delete()
+    report = format_ssl_report(hostname, data)
+    has_sub = storage.has_active_sub(message.from_user.id)
+    await message.answer(report, parse_mode="HTML", reply_markup=back_to_menu_kb(has_sub))
+
+
+# ─── DNS / IP checker ─────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "dns")
+async def cb_dns(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(UserState.dns_waiting_url)
+    await safe_edit(
+        callback,
+        "🌐 <b>DNS / IP / Порты</b>\n\n"
+        "Отправь домен или ссылку:\n"
+        "<code>example.com</code> или <code>https://example.com</code>",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(UserState.dns_waiting_url)
+async def process_dns_url(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    hostname = raw.removeprefix("https://").removeprefix("http://").split("/")[0].split("?")[0]
+
+    if not hostname or "." not in hostname:
+        await message.answer("❌ Введи корректный домен, например: <code>example.com</code>", reply_markup=cancel_kb())
+        return
+
+    await state.clear()
+    wait = await message.answer(f"🌐 Смотрю DNS и сканирую порты <code>{escape(hostname)}</code>…\n⏳ ~10 сек")
+    dns = await dns_lookup(hostname)
+    ports = await check_ports(hostname, list(COMMON_PORTS.keys()))
+    await wait.delete()
+    report = format_dns_report(hostname, dns, ports)
+    has_sub = storage.has_active_sub(message.from_user.id)
+    await message.answer(report, parse_mode="HTML", reply_markup=back_to_menu_kb(has_sub))
 
 
 # ─── Stress test ──────────────────────────────────────────────────────────────
