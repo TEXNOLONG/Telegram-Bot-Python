@@ -1,16 +1,40 @@
 {
   "users": [
     7307275806,
-    8353338744
+    8353338744,
+    8278396916
   ],
-  "total_analyses": 3,
+  "total_analyses": 5,
   "history": {
     "7307275806": [
       {
         "url": "https://yakuipt.ru/",
         "score": 10,
+        "date": "03.06.2026 18:39"
+      },
+      {
+        "url": "https://yakuipt.ru/",
+        "score": 10,
         "date": "03.06.2026 18:28"
       }
+    ],
+    "8278396916": [
+      {
+        "url": "https://yakuipt.ru/",
+        "score": 10,
+        "date": "03.06.2026 18:40"
+      }
     ]
+  },
+  "pending_invoices": [],
+  "payments": [],
+  "settings": {
+    "banner_file_id": null,
+    "prices": {
+      "week": 2.99,
+      "month": 7.99,
+      "quarter": 19.99
+    },
+    "free_limit": 3
   }
 }
