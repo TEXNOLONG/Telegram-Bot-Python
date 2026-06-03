@@ -11,12 +11,10 @@ from aiogram.fsm.state import State, StatesGroup
 from bot.config import CHANNEL_USERNAME, ADMIN_ID
 from bot.keyboards import (
     subscribe_kb, main_menu_kb, back_to_menu_kb, cancel_kb,
-    stress_verify_kb, stress_start_kb,
+    stress_start_kb,
 )
 from bot.utils.site_analyzer import analyze_site, format_report, _calc_score
-from bot.utils.stress_test import (
-    get_verify_code, check_ownership, run_stress_test, format_stress_report,
-)
+from bot.utils.stress_test import run_stress_test, format_stress_report
 from bot.utils.helpers import safe_edit
 from bot.storage import storage
 
@@ -26,6 +24,7 @@ router = Router()
 class UserState(StatesGroup):
     waiting_for_url = State()
     stress_waiting_url = State()
+    stress_choosing_intensity = State()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,15 +77,9 @@ async def cmd_start(message: Message, bot: Bot):
     has_sub = storage.has_active_sub(user_id)
     banner = storage.get_banner()
     welcome_text = (
-        f"👋 Привет, <b>{first_name}</b>!\n\n"
-        "Я анализирую сайты и нахожу:\n"
-        "• 🔎 SEO-проблемы\n"
-        "• 🛡 Уязвимости безопасности\n"
-        "• ⚡ Проблемы производительности\n"
-        "• 🛠 Используемые технологии\n"
-        "• 📡 Системы аналитики\n"
-        "• 🔥 Стресс-тест нагрузки\n\n"
-        "Нажми кнопку ниже чтобы начать 👇"
+        f"Привет, <b>{first_name}</b> 👋\n\n"
+        "Скинь ссылку на сайт — покажу что там за SEO, безопасность, технологии и скорость.\n\n"
+        "Или запусти стресс-тест чтобы проверить как сайт держит нагрузку 🔥"
     )
     kb = main_menu_kb(has_sub)
     if banner:
@@ -276,10 +269,8 @@ async def cb_help(callback: CallbackQuery):
         "• Аналитика: GA, GTM, Яндекс.Метрика\n"
         "• robots.txt, sitemap.xml, favicon, HTTPS\n\n"
         "<b>🔥 Стресс-тест:</b>\n"
-        "• Нагрузочное тестирование твоего сайта\n"
         "• До 100 параллельных запросов\n"
-        "• Статистика: RPS, P50/P95/P99, ошибки\n"
-        "• ⚠️ Требует подтверждения владения сайтом\n\n"
+        "• Статистика: RPS, P50/P95/P99, ошибки\n\n"
         f"🆓 Бесплатно: <b>{limit} анализов/день</b>\n"
         "💎 Подписка: безлимитно + стресс-тест\n\n"
         "По вопросам: @hayder_projectx",
@@ -294,13 +285,11 @@ async def cb_help(callback: CallbackQuery):
 async def cb_stress(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback.from_user.id
 
-    # Require subscription for stress test
     if not storage.has_active_sub(user_id):
         await safe_edit(
             callback,
             "🔥 <b>Стресс-тест</b>\n\n"
-            "⚠️ Стресс-тест доступен только для подписчиков.\n\n"
-            "Оформи подписку 💎 для доступа к этой функции.",
+            "Доступен только с подпиской 💎",
             reply_markup=main_menu_kb(False),
         )
         await callback.answer()
@@ -312,26 +301,19 @@ async def cb_stress(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await callback.answer()
         return
 
-    code = get_verify_code(user_id)
-    await state.update_data(stress_code=code, stress_verified_domain=None)
     await state.set_state(UserState.stress_waiting_url)
-
     await safe_edit(
         callback,
-        "🔥 <b>Стресс-тест сайта</b>\n\n"
-        "⚠️ <b>Важно:</b> стресс-тест допустим только на <b>твоём собственном сайте</b>.\n"
-        "Для подтверждения владения добавь этот мета-тег в &lt;head&gt; сайта:\n\n"
-        f"<code>&lt;meta name=\"site-owner\" content=\"{code}\"&gt;</code>\n\n"
-        "После добавления тега — отправь URL сайта (например: <code>https://mysite.com</code>)\n\n"
-        "💡 После проверки можешь удалить тег.",
+        "🔥 <b>Стресс-тест</b>\n\n"
+        "Отправь ссылку на сайт который хочешь протестировать:\n"
+        "<code>https://mysite.com</code>",
         reply_markup=cancel_kb(),
     )
     await callback.answer()
 
 
 @router.message(UserState.stress_waiting_url)
-async def process_stress_url(message: Message, state: FSMContext, bot: Bot):
-    user_id = message.from_user.id
+async def process_stress_url(message: Message, state: FSMContext):
     url = (message.text or "").strip()
 
     if not url.startswith("http://") and not url.startswith("https://"):
@@ -344,39 +326,18 @@ async def process_stress_url(message: Message, state: FSMContext, bot: Bot):
         )
         return
 
-    data = await state.get_data()
-    code = data.get("stress_code") or get_verify_code(user_id)
-
-    # Verify ownership
-    verifying_msg = await message.answer("🔍 Проверяю подтверждение владения сайтом…")
-    ok, reason = await check_ownership(url, code)
-    await verifying_msg.delete()
-
-    if not ok:
-        await message.answer(
-            f"❌ <b>Подтверждение не пройдено</b>\n\n"
-            f"Причина: {reason}\n\n"
-            f"Убедись что добавил тег в &lt;head&gt; сайта:\n"
-            f"<code>&lt;meta name=\"site-owner\" content=\"{code}\"&gt;</code>\n\n"
-            "Попробуй ещё раз — отправь URL снова:",
-            reply_markup=cancel_kb(),
-        )
-        return
-
-    # Ownership confirmed — save domain and offer test modes
-    await state.update_data(stress_url=url, stress_verified=True)
-    await state.clear()
+    await state.update_data(stress_url=url)
+    await state.set_state(UserState.stress_choosing_intensity)
 
     await message.answer(
-        f"✅ <b>Владение подтверждено!</b>\n\n"
-        f"Сайт: <code>{escape(url)}</code>\n\n"
-        "Выбери интенсивность стресс-теста:",
+        f"🌐 <code>{escape(url)}</code>\n\n"
+        "Выбери интенсивность теста:",
         reply_markup=stress_start_kb(),
     )
 
 
-@router.callback_query(F.data.startswith("stress_run:"))
-async def cb_stress_run(callback: CallbackQuery, bot: Bot):
+@router.callback_query(F.data.startswith("stress_run:"), UserState.stress_choosing_intensity)
+async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
 
     if not storage.has_active_sub(user_id):
@@ -387,26 +348,21 @@ async def cb_stress_run(callback: CallbackQuery, bot: Bot):
     total = int(parts[1])
     concurrency = int(parts[2])
 
-    # Find the URL from the previous message text
-    msg_text = callback.message.text or callback.message.caption or ""
-    url = None
-    for word in msg_text.split():
-        candidate = word.strip(".,\n")
-        if candidate.startswith("http"):
-            url = candidate
-            break
+    data = await state.get_data()
+    url = data.get("stress_url")
+    await state.clear()
 
     if not url:
-        await callback.answer("❌ URL не найден. Начни стресс-тест заново.", show_alert=True)
+        await callback.answer("❌ URL не найден. Начни заново.", show_alert=True)
         return
 
-    await callback.answer("🔥 Запускаю тест…")
+    await callback.answer("🔥 Запускаю…")
 
     status_msg = await callback.message.answer(
-        f"🔥 <b>Стресс-тест запущен</b>\n\n"
+        f"🔥 <b>Стресс-тест идёт…</b>\n\n"
         f"🌐 <code>{escape(url)}</code>\n"
         f"📊 {total} запросов, {concurrency} параллельно\n\n"
-        f"⏳ Прогресс: 0/{total}…"
+        f"⏳ Прогресс: 0/{total}"
     )
 
     async def on_progress(done: int, total_req: int):
