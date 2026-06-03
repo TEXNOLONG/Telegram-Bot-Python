@@ -1,17 +1,23 @@
+import asyncio
 import validators
 from html import escape
 
 from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from bot.config import CHANNEL_USERNAME, CHANNEL_LINK, ADMIN_ID
+from bot.config import CHANNEL_USERNAME, ADMIN_ID
 from bot.keyboards import (
     subscribe_kb, main_menu_kb, back_to_menu_kb, cancel_kb,
+    stress_verify_kb, stress_start_kb,
 )
 from bot.utils.site_analyzer import analyze_site, format_report, _calc_score
+from bot.utils.stress_test import (
+    get_verify_code, check_ownership, run_stress_test, format_stress_report,
+)
+from bot.utils.helpers import safe_edit
 from bot.storage import storage
 
 router = Router()
@@ -19,7 +25,10 @@ router = Router()
 
 class UserState(StatesGroup):
     waiting_for_url = State()
+    stress_waiting_url = State()
 
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async def check_subscription(bot: Bot, user_id: int) -> bool:
     try:
@@ -28,6 +37,22 @@ async def check_subscription(bot: Bot, user_id: int) -> bool:
     except Exception:
         return False
 
+
+def _split_text(text: str, limit: int = 4000) -> list[str]:
+    lines = text.split("\n")
+    parts, current = [], ""
+    for line in lines:
+        if len(current) + len(line) + 1 > limit:
+            parts.append(current)
+            current = line
+        else:
+            current += ("\n" if current else "") + line
+    if current:
+        parts.append(current)
+    return parts
+
+
+# ─── /start ───────────────────────────────────────────────────────────────────
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, bot: Bot):
@@ -39,7 +64,6 @@ async def cmd_start(message: Message, bot: Bot):
 
     storage.upsert_user(user_id, message.from_user.first_name, message.from_user.username)
     is_subscribed = await check_subscription(bot, user_id)
-
     first_name = escape(message.from_user.first_name)
 
     if not is_subscribed:
@@ -60,26 +84,28 @@ async def cmd_start(message: Message, bot: Bot):
         "• 🛡 Уязвимости безопасности\n"
         "• ⚡ Проблемы производительности\n"
         "• 🛠 Используемые технологии\n"
-        "• 📡 Системы аналитики\n\n"
+        "• 📡 Системы аналитики\n"
+        "• 🔥 Стресс-тест нагрузки\n\n"
         "Нажми кнопку ниже чтобы начать 👇"
     )
     kb = main_menu_kb(has_sub)
     if banner:
         await message.answer_photo(photo=banner, caption=welcome_text, reply_markup=kb)
     else:
-        # ReplyKeyboardRemove убирает старую reply-клавиатуру если была
         await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
-        await message.answer("👇", reply_markup=kb)
+        await message.answer("👇 Главное меню:", reply_markup=kb)
 
+
+# ─── Channel subscription check ───────────────────────────────────────────────
 
 @router.callback_query(F.data == "checksub")
 async def cb_check_subscription(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     is_subscribed = await check_subscription(bot, user_id)
-
     if is_subscribed:
         has_sub = storage.has_active_sub(user_id)
-        await callback.message.edit_text(
+        await safe_edit(
+            callback,
             "✅ <b>Подписка подтверждена!</b>\n\n"
             "Нажми кнопку ниже чтобы начать 👇",
             reply_markup=main_menu_kb(has_sub),
@@ -91,41 +117,30 @@ async def cb_check_subscription(callback: CallbackQuery, bot: Bot):
         )
 
 
+# ─── Main menu / cancel ───────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "menu")
 async def cb_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    user_id = callback.from_user.id
-    has_sub = storage.has_active_sub(user_id)
-    try:
-        await callback.message.edit_text(
-            "Выбери действие 👇",
-            reply_markup=main_menu_kb(has_sub),
-        )
-    except Exception:
-        await callback.message.answer(
-            "Выбери действие 👇",
-            reply_markup=main_menu_kb(has_sub),
-        )
+    has_sub = storage.has_active_sub(callback.from_user.id)
+    await safe_edit(callback, "👇 Главное меню:", reply_markup=main_menu_kb(has_sub))
     await callback.answer()
 
 
 @router.callback_query(F.data == "cancel")
 async def cb_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    user_id = callback.from_user.id
-    has_sub = storage.has_active_sub(user_id)
-    try:
-        await callback.message.edit_text(
-            "↩️ Отменено. Выбери действие 👇",
-            reply_markup=main_menu_kb(has_sub),
-        )
-    except Exception:
-        await callback.message.answer(
-            "↩️ Отменено.",
-            reply_markup=main_menu_kb(has_sub),
-        )
+    has_sub = storage.has_active_sub(callback.from_user.id)
+    await safe_edit(callback, "↩️ Отменено. Главное меню:", reply_markup=main_menu_kb(has_sub))
     await callback.answer()
 
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+# ─── Analyze site ─────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "analyze")
 async def cb_analyze(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -133,18 +148,15 @@ async def cb_analyze(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
     is_subscribed = await check_subscription(bot, user_id)
     if not is_subscribed:
-        await callback.message.edit_text(
-            "❌ Для использования бота нужно подписаться на канал.",
-            reply_markup=subscribe_kb(),
-        )
+        await safe_edit(callback, "❌ Для использования бота нужно подписаться на канал.", reply_markup=subscribe_kb())
         await callback.answer()
         return
 
     if not storage.can_analyze(user_id):
         limit = storage.get_free_limit()
-        await callback.message.edit_text(
-            f"⚠️ <b>Исчерпан дневной лимит</b>\n\n"
-            f"🆓 Бесплатно: {limit} анализов в день\n\n"
+        await safe_edit(
+            callback,
+            f"⚠️ <b>Исчерпан дневной лимит ({limit}/день)</b>\n\n"
             "Оформи подписку для безлимитного использования 💎",
             reply_markup=main_menu_kb(False),
         )
@@ -152,75 +164,11 @@ async def cb_analyze(callback: CallbackQuery, state: FSMContext, bot: Bot):
         return
 
     await state.set_state(UserState.waiting_for_url)
-    await callback.message.edit_text(
-        "🔗 <b>Введи ссылку на сайт</b>\n\n"
-        "Пример: <code>https://example.com</code>",
+    await safe_edit(
+        callback,
+        "🔗 <b>Введи ссылку на сайт</b>\n\nПример: <code>https://example.com</code>",
         reply_markup=cancel_kb(),
     )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "history")
-async def cb_history(callback: CallbackQuery):
-    history = storage.get_history(callback.from_user.id)
-    has_sub = storage.has_active_sub(callback.from_user.id)
-
-    if not history:
-        await callback.message.edit_text(
-            "📋 <b>История пуста</b>\n\nАнализируй сайты — они появятся здесь.",
-            reply_markup=main_menu_kb(has_sub),
-        )
-        await callback.answer()
-        return
-
-    lines = ["📋 <b>Последние анализы:</b>\n"]
-    for i, entry in enumerate(history, 1):
-        score = entry.get("score", 0)
-        if score >= 85:
-            em = "🟢"
-        elif score >= 65:
-            em = "🟡"
-        elif score >= 45:
-            em = "🟠"
-        else:
-            em = "🔴"
-        lines.append(f"{i}. {em} <code>{escape(entry['url'])}</code>")
-        lines.append(f"   <b>{score}/100</b> • {entry['date']}")
-
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=main_menu_kb(has_sub),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "help")
-async def cb_help(callback: CallbackQuery):
-    has_sub = storage.has_active_sub(callback.from_user.id)
-    limit = storage.get_free_limit()
-    await callback.message.edit_text(
-        "📖 <b>Как пользоваться:</b>\n\n"
-        "1️⃣ Нажми <b>«🔍 Анализировать сайт»</b>\n"
-        "2️⃣ Отправь ссылку\n"
-        "3️⃣ Получи отчёт с оценкой 0–100\n\n"
-        "<b>Что проверяет бот:</b>\n"
-        "• 🔎 SEO: title, description, h1, OG, Twitter Card\n"
-        "• 🛡 Безопасность: HTTP-заголовки, утечка версий\n"
-        "• ⚡ Производительность: скорость, размер, скрипты\n"
-        "• ♿ Доступность: alt у картинок, label у форм\n"
-        "• 🛠 Технологии: CMS, фреймворки, сервер\n"
-        "• 📡 Аналитика: GA, GTM, Яндекс.Метрика\n"
-        "• 🗺 robots.txt, sitemap.xml, favicon, HTTPS\n\n"
-        f"🆓 Бесплатно: <b>{limit} анализов в день</b>\n"
-        "💎 Подписка: безлимитно\n\n"
-        "По вопросам: @hayder_projectx",
-        reply_markup=main_menu_kb(has_sub),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "noop")
-async def cb_noop(callback: CallbackQuery):
     await callback.answer()
 
 
@@ -235,8 +183,7 @@ async def process_url(message: Message, state: FSMContext, bot: Bot):
 
     if not validators.url(url):
         await message.answer(
-            "❌ Некорректная ссылка.\n"
-            "Пример: <code>https://example.com</code>",
+            "❌ Некорректная ссылка.\nПример: <code>https://example.com</code>",
             reply_markup=cancel_kb(),
         )
         return
@@ -244,20 +191,15 @@ async def process_url(message: Message, state: FSMContext, bot: Bot):
     is_subscribed = await check_subscription(bot, user_id)
     if not is_subscribed:
         await state.clear()
-        await message.answer(
-            "❌ Ты отписался от канала!",
-            reply_markup=subscribe_kb(),
-        )
+        await message.answer("❌ Ты отписался от канала!", reply_markup=subscribe_kb())
         return
 
     if not storage.can_analyze(user_id):
         await state.clear()
         limit = storage.get_free_limit()
-        has_sub = storage.has_active_sub(user_id)
         await message.answer(
-            f"⚠️ <b>Исчерпан лимит: {limit} анализов в день</b>\n\n"
-            "Оформи подписку для безлимитного использования 💎",
-            reply_markup=main_menu_kb(has_sub),
+            f"⚠️ Исчерпан лимит: {limit} анализов в день\n\nОформи подписку 💎",
+            reply_markup=main_menu_kb(storage.has_active_sub(user_id)),
         )
         return
 
@@ -270,8 +212,7 @@ async def _run_analysis(message: Message, url: str, bot: Bot):
     has_sub = storage.has_active_sub(user_id)
 
     processing = await message.answer(
-        "⏳ <b>Анализирую сайт…</b>\n\n"
-        "Проверяю SEO, безопасность, производительность и технологии 🔍"
+        "⏳ <b>Анализирую сайт…</b>\n\nПроверяю SEO, безопасность, производительность и технологии 🔍"
     )
 
     data = await analyze_site(url)
@@ -280,39 +221,217 @@ async def _run_analysis(message: Message, url: str, bot: Bot):
 
     if not has_sub:
         storage.use_free_analysis(user_id)
-
     storage.record_analysis(user_id)
     storage.add_history(user_id, url, score)
 
     await processing.delete()
 
     kb = back_to_menu_kb(storage.has_active_sub(user_id))
+    chunks = _split_text(report)
+    for i, chunk in enumerate(chunks):
+        await message.answer(chunk, parse_mode="HTML", reply_markup=kb if i == len(chunks) - 1 else None)
 
-    if len(report) > 4096:
-        chunks = _split_text(report, 4000)
-        for i, chunk in enumerate(chunks):
-            await message.answer(
-                chunk,
-                parse_mode="HTML",
-                reply_markup=kb if i == len(chunks) - 1 else None,
+
+# ─── History ──────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "history")
+async def cb_history(callback: CallbackQuery):
+    history = storage.get_history(callback.from_user.id)
+    has_sub = storage.has_active_sub(callback.from_user.id)
+
+    if not history:
+        await safe_edit(
+            callback,
+            "📋 <b>История пуста</b>\n\nАнализируй сайты — они появятся здесь.",
+            reply_markup=main_menu_kb(has_sub),
+        )
+        await callback.answer()
+        return
+
+    lines = ["📋 <b>Последние анализы:</b>\n"]
+    for i, entry in enumerate(history, 1):
+        score = entry.get("score", 0)
+        em = "🟢" if score >= 85 else "🟡" if score >= 65 else "🟠" if score >= 45 else "🔴"
+        lines.append(f"{i}. {em} <code>{escape(entry['url'])}</code>")
+        lines.append(f"   <b>{score}/100</b> • {entry['date']}")
+
+    await safe_edit(callback, "\n".join(lines), reply_markup=main_menu_kb(has_sub))
+    await callback.answer()
+
+
+# ─── Help ─────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "help")
+async def cb_help(callback: CallbackQuery):
+    has_sub = storage.has_active_sub(callback.from_user.id)
+    limit = storage.get_free_limit()
+    await safe_edit(
+        callback,
+        "📖 <b>Возможности бота:</b>\n\n"
+        "<b>🔍 Анализ сайта:</b>\n"
+        "• SEO: title, description, h1, OG, Twitter Card\n"
+        "• Безопасность: 6 HTTP-заголовков\n"
+        "• Производительность: скорость, скрипты, размер\n"
+        "• Технологии: CMS, фреймворки, сервер\n"
+        "• Аналитика: GA, GTM, Яндекс.Метрика\n"
+        "• robots.txt, sitemap.xml, favicon, HTTPS\n\n"
+        "<b>🔥 Стресс-тест:</b>\n"
+        "• Нагрузочное тестирование твоего сайта\n"
+        "• До 100 параллельных запросов\n"
+        "• Статистика: RPS, P50/P95/P99, ошибки\n"
+        "• ⚠️ Требует подтверждения владения сайтом\n\n"
+        f"🆓 Бесплатно: <b>{limit} анализов/день</b>\n"
+        "💎 Подписка: безлимитно + стресс-тест\n\n"
+        "По вопросам: @hayder_projectx",
+        reply_markup=main_menu_kb(has_sub),
+    )
+    await callback.answer()
+
+
+# ─── Stress test ──────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "stress")
+async def cb_stress(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    user_id = callback.from_user.id
+
+    # Require subscription for stress test
+    if not storage.has_active_sub(user_id):
+        await safe_edit(
+            callback,
+            "🔥 <b>Стресс-тест</b>\n\n"
+            "⚠️ Стресс-тест доступен только для подписчиков.\n\n"
+            "Оформи подписку 💎 для доступа к этой функции.",
+            reply_markup=main_menu_kb(False),
+        )
+        await callback.answer()
+        return
+
+    is_subscribed = await check_subscription(bot, user_id)
+    if not is_subscribed:
+        await safe_edit(callback, "❌ Нужно подписаться на канал.", reply_markup=subscribe_kb())
+        await callback.answer()
+        return
+
+    code = get_verify_code(user_id)
+    await state.update_data(stress_code=code, stress_verified_domain=None)
+    await state.set_state(UserState.stress_waiting_url)
+
+    await safe_edit(
+        callback,
+        "🔥 <b>Стресс-тест сайта</b>\n\n"
+        "⚠️ <b>Важно:</b> стресс-тест допустим только на <b>твоём собственном сайте</b>.\n"
+        "Для подтверждения владения добавь этот мета-тег в &lt;head&gt; сайта:\n\n"
+        f"<code>&lt;meta name=\"site-owner\" content=\"{code}\"&gt;</code>\n\n"
+        "После добавления тега — отправь URL сайта (например: <code>https://mysite.com</code>)\n\n"
+        "💡 После проверки можешь удалить тег.",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(UserState.stress_waiting_url)
+async def process_stress_url(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    url = (message.text or "").strip()
+
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "https://" + url
+
+    if not validators.url(url):
+        await message.answer(
+            "❌ Некорректная ссылка.\nПример: <code>https://mysite.com</code>",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    data = await state.get_data()
+    code = data.get("stress_code") or get_verify_code(user_id)
+
+    # Verify ownership
+    verifying_msg = await message.answer("🔍 Проверяю подтверждение владения сайтом…")
+    ok, reason = await check_ownership(url, code)
+    await verifying_msg.delete()
+
+    if not ok:
+        await message.answer(
+            f"❌ <b>Подтверждение не пройдено</b>\n\n"
+            f"Причина: {reason}\n\n"
+            f"Убедись что добавил тег в &lt;head&gt; сайта:\n"
+            f"<code>&lt;meta name=\"site-owner\" content=\"{code}\"&gt;</code>\n\n"
+            "Попробуй ещё раз — отправь URL снова:",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    # Ownership confirmed — save domain and offer test modes
+    await state.update_data(stress_url=url, stress_verified=True)
+    await state.clear()
+
+    await message.answer(
+        f"✅ <b>Владение подтверждено!</b>\n\n"
+        f"Сайт: <code>{escape(url)}</code>\n\n"
+        "Выбери интенсивность стресс-теста:",
+        reply_markup=stress_start_kb(),
+    )
+
+
+@router.callback_query(F.data.startswith("stress_run:"))
+async def cb_stress_run(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+
+    if not storage.has_active_sub(user_id):
+        await callback.answer("❌ Требуется подписка", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    total = int(parts[1])
+    concurrency = int(parts[2])
+
+    # Find the URL from the previous message text
+    msg_text = callback.message.text or callback.message.caption or ""
+    url = None
+    for word in msg_text.split():
+        candidate = word.strip(".,\n")
+        if candidate.startswith("http"):
+            url = candidate
+            break
+
+    if not url:
+        await callback.answer("❌ URL не найден. Начни стресс-тест заново.", show_alert=True)
+        return
+
+    await callback.answer("🔥 Запускаю тест…")
+
+    status_msg = await callback.message.answer(
+        f"🔥 <b>Стресс-тест запущен</b>\n\n"
+        f"🌐 <code>{escape(url)}</code>\n"
+        f"📊 {total} запросов, {concurrency} параллельно\n\n"
+        f"⏳ Прогресс: 0/{total}…"
+    )
+
+    async def on_progress(done: int, total_req: int):
+        try:
+            await status_msg.edit_text(
+                f"🔥 <b>Стресс-тест идёт…</b>\n\n"
+                f"🌐 <code>{escape(url)}</code>\n"
+                f"⏳ Прогресс: {done}/{total_req}"
             )
-    else:
-        await message.answer(report, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+
+    try:
+        result = await run_stress_test(url, total=total, concurrency=concurrency, progress_cb=on_progress)
+        report = format_stress_report(url, result)
+        await status_msg.delete()
+        await callback.message.answer(report, parse_mode="HTML", reply_markup=main_menu_kb(True))
+    except Exception as e:
+        await status_msg.edit_text(
+            f"❌ <b>Ошибка при стресс-тесте</b>\n\n{escape(str(e))}",
+            reply_markup=main_menu_kb(True),
+        )
 
 
-def _split_text(text: str, limit: int) -> list[str]:
-    lines = text.split("\n")
-    parts, current = [], ""
-    for line in lines:
-        if len(current) + len(line) + 1 > limit:
-            parts.append(current)
-            current = line
-        else:
-            current += ("\n" if current else "") + line
-    if current:
-        parts.append(current)
-    return parts
-
+# ─── Fallback ─────────────────────────────────────────────────────────────────
 
 @router.message()
 async def fallback_handler(message: Message, state: FSMContext, bot: Bot):
@@ -329,15 +448,15 @@ async def fallback_handler(message: Message, state: FSMContext, bot: Bot):
         return
 
     text = (message.text or "").strip()
+    # Auto-detect URLs in plain text
     if text.startswith("http") or ("." in text and " " not in text and len(text) > 5):
         candidate = text if text.startswith("http") else "https://" + text
         if validators.url(candidate):
             if not storage.can_analyze(user_id):
                 limit = storage.get_free_limit()
                 await message.answer(
-                    f"⚠️ Исчерпан лимит: {limit} анализов в день\n\n"
-                    "Оформи подписку 💎",
-                    reply_markup=main_menu_kb(False),
+                    f"⚠️ Исчерпан лимит: {limit}/день\nОформи подписку 💎",
+                    reply_markup=main_menu_kb(storage.has_active_sub(user_id)),
                 )
                 return
             await _run_analysis(message, candidate, bot)

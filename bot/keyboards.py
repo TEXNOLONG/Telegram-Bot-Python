@@ -19,7 +19,10 @@ def main_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=sub_label, callback_data="sub"),
             InlineKeyboardButton(text="📋 История", callback_data="history"),
         ],
-        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
+        [
+            InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
+            InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"),
+        ],
     ])
 
 
@@ -37,7 +40,25 @@ def back_to_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=sub_label, callback_data="sub"),
             InlineKeyboardButton(text="📋 История", callback_data="history"),
         ],
-        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
+        [
+            InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
+            InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"),
+        ],
+    ])
+
+
+def stress_verify_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Тег добавлен — проверить!", callback_data="stress_check")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
+    ])
+
+
+def stress_start_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔥 50 запросов (стандарт)", callback_data="stress_run:50:10")],
+        [InlineKeyboardButton(text="💥 100 запросов (усиленный)", callback_data="stress_run:100:20")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
     ])
 
 

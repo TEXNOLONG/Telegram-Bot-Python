@@ -1,10 +1,10 @@
 {
   "users": {
     "7307275806": {
-      "first_name": "",
-      "username": null,
+      "first_name": "𝚡𝚊𝚛𝚒𝚘𝚗 𝚐𝚘𝚍𝚕𝚒𝚔𝚎 I 𝙍𝙆𝘾",
+      "username": "miraveta",
       "first_seen": "2026-06-03T18:48:38",
-      "last_active": "2026-06-03T18:48:38",
+      "last_active": "2026-06-03T18:50:37",
       "banned": false,
       "sub_expires": null,
       "sub_plan": null,
@@ -25,10 +25,10 @@
       "total_analyses": 0
     },
     "8278396916": {
-      "first_name": "",
-      "username": null,
+      "first_name": "𝚡𝚊𝚛𝚒𝚘𝚗 𝚐𝚘𝚍𝚕𝚒𝚔𝚎 I 𝗥𝗞𝗖",
+      "username": "xokezal",
       "first_seen": "2026-06-03T18:48:38",
-      "last_active": "2026-06-03T18:48:38",
+      "last_active": "2026-06-03T18:49:53",
       "banned": false,
       "sub_expires": null,
       "sub_plan": null,
@@ -62,7 +62,7 @@
   "pending_invoices": [],
   "payments": [],
   "settings": {
-    "banner_file_id": null,
+    "banner_file_id": "AgACAgQAAxkBAANFaiB3eos4_aArKv6RlNyL5Yicw5UAAv0RaxsfogABUWv4AncrGltBAQADAgADeQADOwQ",
     "prices": {
       "week": 2.99,
       "month": 7.99,
