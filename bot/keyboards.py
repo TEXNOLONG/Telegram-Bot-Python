@@ -13,7 +13,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔍 Анализировать сайт")],
-            [KeyboardButton(text="ℹ️ Помощь")],
+            [KeyboardButton(text="📋 История"), KeyboardButton(text="ℹ️ Помощь")],
         ],
         resize_keyboard=True,
     )
@@ -23,8 +23,8 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔍 Анализировать сайт")],
+            [KeyboardButton(text="📋 История"), KeyboardButton(text="ℹ️ Помощь")],
             [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="📢 Рассылка")],
-            [KeyboardButton(text="ℹ️ Помощь")],
         ],
         resize_keyboard=True,
     )

@@ -1,6 +1,6 @@
 import json
-import os
 from pathlib import Path
+from datetime import datetime
 
 DATA_FILE = Path("bot_data.json")
 
@@ -16,7 +16,7 @@ class Storage:
                     return json.load(f)
             except Exception:
                 pass
-        return {"users": [], "total_analyses": 0}
+        return {"users": [], "total_analyses": 0, "history": {}}
 
     def _save(self):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -36,6 +36,25 @@ class Storage:
 
     def get_total_analyses(self) -> int:
         return self._data.get("total_analyses", 0)
+
+    def add_history(self, user_id: int, url: str, score: int):
+        key = str(user_id)
+        if "history" not in self._data:
+            self._data["history"] = {}
+        if key not in self._data["history"]:
+            self._data["history"][key] = []
+        entry = {
+            "url": url,
+            "score": score,
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        }
+        self._data["history"][key].insert(0, entry)
+        self._data["history"][key] = self._data["history"][key][:10]
+        self._save()
+
+    def get_history(self, user_id: int) -> list[dict]:
+        key = str(user_id)
+        return self._data.get("history", {}).get(key, [])
 
 
 storage = Storage()
