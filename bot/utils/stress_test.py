@@ -23,8 +23,10 @@ async def run_stress_test(
         "Connection": "keep-alive",
     }
 
+    # shared live counters (mutable dict so closures see updates)
+    live = {"done": 0, "success": 0, "failed": 0}
+
     async def one_request(session: aiohttp.ClientSession) -> dict:
-        nonlocal done_count
         async with semaphore:
             t0 = time.monotonic()
             try:
@@ -34,24 +36,29 @@ async def run_stress_test(
                     allow_redirects=True,
                     max_redirects=3,
                 ) as resp:
-                    # drain body so connection returns to pool
                     await resp.read()
                     elapsed = time.monotonic() - t0
-                    return {"ok": resp.status < 400, "status": resp.status, "time": elapsed}
+                    result = {"ok": resp.status < 400, "status": resp.status, "time": elapsed}
             except asyncio.TimeoutError:
-                return {"ok": False, "error": "timeout", "time": time.monotonic() - t0}
+                result = {"ok": False, "error": "timeout", "time": time.monotonic() - t0}
             except aiohttp.ClientConnectorError:
-                return {"ok": False, "error": "connect_error", "time": time.monotonic() - t0}
-            except aiohttp.ClientError as e:
-                return {"ok": False, "error": type(e).__name__, "time": time.monotonic() - t0}
-            except Exception as e:
-                return {"ok": False, "error": type(e).__name__, "time": time.monotonic() - t0}
-            finally:
-                async with lock:
-                    done_count += 1
-                    step = max(50, total // 20)
-                    if progress_cb and done_count % step == 0:
-                        await progress_cb(done_count, total)
+                result = {"ok": False, "error": "connect_error", "time": time.monotonic() - t0}
+            except (aiohttp.ClientError, Exception) as e:
+                result = {"ok": False, "error": type(e).__name__, "time": time.monotonic() - t0}
+
+            async with lock:
+                live["done"] += 1
+                if result.get("ok"):
+                    live["success"] += 1
+                else:
+                    live["failed"] += 1
+                step = max(100, total // 20)
+                if progress_cb and live["done"] % step == 0:
+                    elapsed_wall = time.monotonic() - start_wall
+                    rps = live["done"] / elapsed_wall if elapsed_wall > 0 else 0
+                    await progress_cb(live["done"], total, live["success"], live["failed"], rps)
+
+            return result
 
     connector = aiohttp.TCPConnector(
         limit=concurrency,

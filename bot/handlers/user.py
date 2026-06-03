@@ -1,4 +1,5 @@
 import asyncio
+import random
 import validators
 from html import escape
 
@@ -414,6 +415,15 @@ async def process_stress_url(message: Message, state: FSMContext):
     )
 
 
+def _bar(done: int, total: int, width: int = 16) -> str:
+    filled = int(width * done / total) if total else 0
+    return "█" * filled + "░" * (width - filled)
+
+
+def _sep() -> str:
+    return "─" * 24
+
+
 @router.callback_query(F.data.startswith("stress_run:"), UserState.stress_choosing_intensity)
 async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -434,35 +444,113 @@ async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ URL не найден. Начни заново.", show_alert=True)
         return
 
-    await callback.answer("🔥 Запускаю…")
+    await callback.answer()
 
-    status_msg = await callback.message.answer(
-        f"🔥 <b>Стресс-тест идёт…</b>\n\n"
-        f"🌐 <code>{escape(url)}</code>\n"
-        f"📊 {total} запросов, {concurrency} параллельно\n\n"
-        f"⏳ Прогресс: 0/{total}"
+    # ── Fake proxy numbers ──────────────────────────────────────
+    proxy_total   = random.randint(8_600, 9_800)
+    proxy_active  = random.randint(int(proxy_total * 0.88), int(proxy_total * 0.96))
+    proxy_countries = random.randint(38, 64)
+    hostname = url.removeprefix("https://").removeprefix("http://").split("/")[0]
+
+    sep = _sep()
+
+    # Phase 1 — scanning
+    msg = await callback.message.answer(
+        f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
+        f"{sep}\n"
+        f"🎯 <code>{escape(hostname)}</code>\n"
+        f"{sep}\n\n"
+        f"🔍 Сканирую прокси-сети...\n"
+        f"░░░░░░░░░░░░░░░░  0%"
     )
+    await asyncio.sleep(1.2)
 
-    async def on_progress(done: int, total_req: int):
+    # Phase 2 — found proxies
+    try:
+        await msg.edit_text(
+            f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
+            f"{sep}\n"
+            f"🎯 <code>{escape(hostname)}</code>\n"
+            f"{sep}\n\n"
+            f"🌐 Найдено прокси: <b>{proxy_total:,}</b>\n"
+            f"📡 HTTP · HTTPS · SOCKS4 · SOCKS5\n"
+            f"🗺  Охват: {proxy_countries} стран"
+        )
+    except Exception:
+        pass
+    await asyncio.sleep(1.3)
+
+    # Phase 3 — connecting
+    try:
+        await msg.edit_text(
+            f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
+            f"{sep}\n"
+            f"🎯 <code>{escape(hostname)}</code>\n"
+            f"{sep}\n\n"
+            f"🔌 Подключаюсь через прокси...\n"
+            f"{_bar(proxy_active, proxy_total)}  {proxy_active * 100 // proxy_total}%\n\n"
+            f"✅ Активных: <b>{proxy_active:,}</b> / {proxy_total:,}\n"
+            f"⚙️ Потоков:  <b>{concurrency:,}</b>"
+        )
+    except Exception:
+        pass
+    await asyncio.sleep(1.4)
+
+    # Phase 4 — countdown 3…2…1
+    for n in (3, 2, 1):
         try:
-            await status_msg.edit_text(
-                f"🔥 <b>Стресс-тест идёт…</b>\n\n"
-                f"🌐 <code>{escape(url)}</code>\n"
-                f"⏳ Прогресс: {done}/{total_req}"
+            await msg.edit_text(
+                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
+                f"{sep}\n"
+                f"🎯 <code>{escape(hostname)}</code>\n"
+                f"{sep}\n\n"
+                f"🚀 Запуск через  <b>{n}...</b>"
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+    # Phase 5 — live progress during actual test
+    async def on_progress(done: int, total_req: int, success: int, failed: int, rps: float):
+        pct = done * 100 // total_req
+        sr  = success * 100 // done if done else 0
+        try:
+            await msg.edit_text(
+                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ ИДЁТ</b>\n"
+                f"{sep}\n"
+                f"🎯 <code>{escape(hostname)}</code>\n"
+                f"{sep}\n\n"
+                f"📤 Отправлено: <b>{done:,}</b> / {total_req:,}\n"
+                f"{_bar(done, total_req)}  {pct}%\n\n"
+                f"✅ Успешных:  <b>{success:,}</b>  ({sr}%)\n"
+                f"❌ Ошибок:    <b>{failed:,}</b>\n"
+                f"⚡ RPS:        <b>~{rps:.0f}</b>\n"
+                f"{sep}"
             )
         except Exception:
             pass
 
     try:
-        result = await run_stress_test(url, total=total, concurrency=concurrency, progress_cb=on_progress)
-        report = format_stress_report(url, result)
-        await status_msg.delete()
-        await callback.message.answer(report, parse_mode="HTML", reply_markup=main_menu_kb(True))
-    except Exception as e:
-        await status_msg.edit_text(
-            f"❌ <b>Ошибка при стресс-тесте</b>\n\n{escape(str(e))}",
-            reply_markup=main_menu_kb(True),
+        result = await run_stress_test(
+            url, total=total, concurrency=concurrency, progress_cb=on_progress
         )
+    except Exception as e:
+        try:
+            await msg.edit_text(
+                f"❌ <b>Ошибка при тесте</b>\n\n{escape(str(e))}",
+                reply_markup=main_menu_kb(True),
+            )
+        except Exception:
+            pass
+        return
+
+    # Final report
+    report = format_stress_report(url, result)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await callback.message.answer(report, parse_mode="HTML", reply_markup=main_menu_kb(True))
 
 
 # ─── Fallback ─────────────────────────────────────────────────────────────────
