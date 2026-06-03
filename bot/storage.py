@@ -29,6 +29,11 @@ class Storage:
         return {}
 
     def _ensure_defaults(self):
+        # migrate old list-of-IDs format → dict format
+        if isinstance(self._data.get("users"), list):
+            old_ids = self._data["users"]
+            self._data["users"] = {str(uid): self._default_user() for uid in old_ids}
+
         self._data.setdefault("users", {})
         self._data.setdefault("history", {})
         self._data.setdefault("pending_invoices", [])

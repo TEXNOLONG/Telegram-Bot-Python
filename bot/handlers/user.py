@@ -29,49 +29,22 @@ async def check_subscription(bot: Bot, user_id: int) -> bool:
         return False
 
 
-async def send_welcome(target, user_id: int, first_name: str, has_sub: bool, banner: str | None):
-    text = (
-        f"👋 Привет, <b>{escape(first_name)}</b>!\n\n"
-        "Я анализирую сайты и нахожу:\n"
-        "• 🔎 SEO-проблемы\n"
-        "• 🛡 Уязвимости безопасности\n"
-        "• ⚡ Проблемы производительности\n"
-        "• 🛠 Используемые технологии\n"
-        "• 📡 Системы аналитики\n\n"
-        "Нажми кнопку ниже чтобы начать 👇"
-    )
-    kb = main_menu_kb(has_sub)
-    if banner:
-        if hasattr(target, "answer_photo"):
-            await target.answer_photo(photo=banner, caption=text, reply_markup=kb)
-        else:
-            await target.edit_media
-    else:
-        if hasattr(target, "answer"):
-            await target.answer(text, reply_markup=kb, reply_markup_remove=None)
-
-
 @router.message(CommandStart())
 async def cmd_start(message: Message, bot: Bot):
     user_id = message.from_user.id
 
     if storage.is_banned(user_id):
-        await message.answer(
-            "🚫 Ты заблокирован в этом боте.",
-            reply_markup=ReplyKeyboardRemove(),
-        )
+        await message.answer("🚫 Ты заблокирован в этом боте.", reply_markup=ReplyKeyboardRemove())
         return
 
     storage.upsert_user(user_id, message.from_user.first_name, message.from_user.username)
     is_subscribed = await check_subscription(bot, user_id)
 
-    await message.answer(".", reply_markup=ReplyKeyboardRemove())
-    import asyncio
-    await asyncio.sleep(0.1)
+    first_name = escape(message.from_user.first_name)
 
     if not is_subscribed:
         await message.answer(
-            f"👋 Привет, <b>{escape(message.from_user.first_name)}</b>!\n\n"
+            f"👋 Привет, <b>{first_name}</b>!\n\n"
             "Для использования бота подпишись на наш канал 📢\n\n"
             "После подписки нажми <b>«✅ Проверить подписку»</b>",
             reply_markup=subscribe_kb(),
@@ -80,8 +53,8 @@ async def cmd_start(message: Message, bot: Bot):
 
     has_sub = storage.has_active_sub(user_id)
     banner = storage.get_banner()
-    text = (
-        f"👋 Привет, <b>{escape(message.from_user.first_name)}</b>!\n\n"
+    welcome_text = (
+        f"👋 Привет, <b>{first_name}</b>!\n\n"
         "Я анализирую сайты и нахожу:\n"
         "• 🔎 SEO-проблемы\n"
         "• 🛡 Уязвимости безопасности\n"
@@ -92,9 +65,11 @@ async def cmd_start(message: Message, bot: Bot):
     )
     kb = main_menu_kb(has_sub)
     if banner:
-        await message.answer_photo(photo=banner, caption=text, reply_markup=kb)
+        await message.answer_photo(photo=banner, caption=welcome_text, reply_markup=kb)
     else:
-        await message.answer(text, reply_markup=kb)
+        # ReplyKeyboardRemove убирает старую reply-клавиатуру если была
+        await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
+        await message.answer("👇", reply_markup=kb)
 
 
 @router.callback_query(F.data == "checksub")
