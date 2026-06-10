@@ -65,11 +65,12 @@ def stress_verify_kb(user_id: int) -> InlineKeyboardMarkup:
 
 def stress_start_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔥    500 запросов  /   50 потоков",  callback_data="stress_run:500:50")],
-        [InlineKeyboardButton(text="💥  1 000 запросов  /  100 потоков",  callback_data="stress_run:1000:100")],
-        [InlineKeyboardButton(text="⚡  5 000 запросов  /  200 потоков",  callback_data="stress_run:5000:200")],
-        [InlineKeyboardButton(text="🌋 10 000 запросов  /  500 потоков",  callback_data="stress_run:10000:500")],
-        [InlineKeyboardButton(text="☢️ 25 000 запросов  / 1000 потоков",  callback_data="stress_run:25000:1000")],
+        [InlineKeyboardButton(text="🔥  1 000 запросов  /  100 потоков  — Лёгкий",   callback_data="stress_run:1000:100")],
+        [InlineKeyboardButton(text="💥  5 000 запросов  /  300 потоков  — Средний",  callback_data="stress_run:5000:300")],
+        [InlineKeyboardButton(text="⚡ 10 000 запросов  /  500 потоков  — Сильный",  callback_data="stress_run:10000:500")],
+        [InlineKeyboardButton(text="🌋 25 000 запросов  /  800 потоков  — Мощный",   callback_data="stress_run:25000:800")],
+        [InlineKeyboardButton(text="☢️ 50 000 запросов  / 1500 потоков  — Жёсткий",  callback_data="stress_run:50000:1500")],
+        [InlineKeyboardButton(text="💀100 000 запросов  / 3000 потоков  — МАКСИМУМ", callback_data="stress_run:100000:3000")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
     ])
 
