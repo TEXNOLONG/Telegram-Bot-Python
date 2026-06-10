@@ -15,7 +15,11 @@ from bot.keyboards import (
     stress_start_kb,
 )
 from bot.utils.site_analyzer import analyze_site, format_report, _calc_score
-from bot.utils.stress_test import run_stress_test, format_stress_report
+from bot.utils.stress_test import (
+    run_stress_test, format_stress_report,
+    scan_ports, _parse_target, run_tcp_flood, run_http_flood,
+    SCAN_PORTS,
+)
 from bot.utils.ssl_checker import check_ssl, format_ssl_report
 from bot.utils.dns_checker import dns_lookup, check_ports, COMMON_PORTS, format_dns_report
 from bot.utils.ddos_checker import check_ddos_protection, format_ddos_report
@@ -521,78 +525,135 @@ async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
+    host, explicit_port = _parse_target(url)
     hostname = url.removeprefix("https://").removeprefix("http://").split("/")[0]
     sep = _sep()
-    scan_lines: list[str] = []
 
-    # Phase 1 — port scan (real)
+    HTTP_PORTS  = {80, 8080, 8000, 3000, 5000}
+    HTTPS_PORTS = {443, 8443}
+
+    # ── Phase 1: port scan ──────────────────────────────────────
     msg = await callback.message.answer(
-        f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
-        f"{sep}\n"
-        f"🎯 <code>{escape(hostname)}</code>\n"
-        f"{sep}\n\n"
-        f"🔍 Сканирую открытые порты…"
+        f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
+        f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
+        f"🔍 Сканирую открытые порты…",
+        parse_mode="HTML",
     )
 
-    async def on_scan(line: str):
-        scan_lines.append(line)
-        try:
-            await msg.edit_text(
-                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
-                f"{sep}\n"
-                f"🎯 <code>{escape(hostname)}</code>\n"
-                f"{sep}\n\n"
-                + "\n".join(scan_lines),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
+    ports_to_scan = list(dict.fromkeys([explicit_port] + SCAN_PORTS))
+    open_ports = await scan_ports(host, ports_to_scan)
 
-    # Phase 2 — countdown 3…2…1
-    async def do_countdown():
-        for n in (3, 2, 1):
+    # ── Reachability check ──────────────────────────────────────
+    if not open_ports:
+        # Double-check with a direct TCP connect to the explicit port
+        probe = await scan_ports(host, [explicit_port], timeout=3.0)
+        if not probe:
             try:
                 await msg.edit_text(
-                    f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
-                    f"{sep}\n"
-                    f"🎯 <code>{escape(hostname)}</code>\n"
-                    f"{sep}\n\n"
-                    + "\n".join(scan_lines) + f"\n\n🚀 Запуск через <b>{n}…</b>",
+                    f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
+                    f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
+                    f"🚫 <b>Цель недоступна с наших серверов</b>\n\n"
+                    f"Возможные причины:\n"
+                    f"• CDN / Cloudflare блокирует облачные IP\n"
+                    f"• Фаервол закрывает все входящие соединения\n"
+                    f"• Сайт работает только в определённых странах\n"
+                    f"• Домен не резолвится\n\n"
+                    f"💡 Попробуй другой сайт или проверь IP вручную.",
                     parse_mode="HTML",
+                    reply_markup=main_menu_kb(True),
                 )
             except Exception:
                 pass
-            await asyncio.sleep(1.0)
+            return
 
-    # Phase 3 — live progress during actual test
-    mode_label = {"http": "HTTP-флуд", "tcp": "TCP-флуд"}
+    if open_ports:
+        ports_str = "  ".join(f"<b>{p}</b>" for p in open_ports)
+        scan_info = f"✅ Открытые порты: {ports_str}"
+    else:
+        scan_info = f"⚠️ Порты закрыты — атакуем TCP на :{explicit_port}"
 
-    async def on_progress(done: int, total_req: int, success: int, failed: int, rps: float):
-        pct = done * 100 // total_req
-        sr  = success * 100 // done if done else 0
+    # Decide mode
+    chosen_port = explicit_port
+    use_http = False
+    has_scheme = url.startswith("http://") or url.startswith("https://")
+
+    if open_ports:
+        chosen_port = explicit_port if explicit_port in open_ports else open_ports[0]
+        use_http = chosen_port in (HTTP_PORTS | HTTPS_PORTS)
+    if has_scheme and chosen_port in (HTTP_PORTS | HTTPS_PORTS):
+        use_http = True
+
+    mode_name = "🌐 HTTP-флуд" if use_http else "🔌 TCP-флуд"
+    mode_tip  = "" if use_http else "\nℹ️ RST/таймаут = пакеты дошли до цели"
+
+    try:
+        await msg.edit_text(
+            f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
+            f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
+            f"{scan_info}\n"
+            f"📡 Режим: {mode_name}  :{chosen_port}",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+    # ── Phase 2: countdown ──────────────────────────────────────
+    for n in (3, 2, 1):
         try:
             await msg.edit_text(
-                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ ИДЁТ</b>\n"
-                f"{sep}\n"
-                f"🎯 <code>{escape(hostname)}</code>\n"
-                f"{sep}\n\n"
-                f"📤 Отправлено: <b>{done:,}</b> / {total_req:,}\n"
+                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
+                f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
+                f"{scan_info}\n"
+                f"📡 Режим: {mode_name}  :{chosen_port}\n\n"
+                f"🚀 Запуск через <b>{n}…</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+    # ── Phase 3: flood with live progress ───────────────────────
+    async def on_progress(done: int, total_req: int, success: int, failed: int, rps: float):
+        pct = done * 100 // total_req
+        if use_http:
+            s_label = f"✅ Ответов:    <b>{success:,}</b>  ({success*100//done if done else 0}%)"
+            f_label = f"❌ Ошибок:     <b>{failed:,}</b>"
+        else:
+            s_label = f"🔌 Соединений: <b>{success:,}</b>  (принято)"
+            f_label = f"📶 RST/таймаут: <b>{failed:,}</b>  (пакеты дошли)"
+        try:
+            await msg.edit_text(
+                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ ИДЁТ</b>\n{sep}\n"
+                f"🎯 <code>{escape(hostname)}</code>  :{chosen_port}\n"
+                f"📡 {mode_name}\n{sep}\n\n"
+                f"📤 Пакетов: <b>{done:,}</b> / {total_req:,}\n"
                 f"{_bar(done, total_req)}  {pct}%\n\n"
-                f"✅ Успешных:  <b>{success:,}</b>  ({sr}%)\n"
-                f"❌ Ошибок:    <b>{failed:,}</b>\n"
-                f"⚡ RPS:        <b>~{rps:.0f}</b>\n"
-                f"{sep}",
+                f"{s_label}\n"
+                f"{f_label}\n"
+                f"⚡ RPS: <b>~{rps:.0f}</b>/сек"
+                f"{mode_tip}\n{sep}",
                 parse_mode="HTML",
             )
         except Exception:
             pass
 
+    # ── Run flood ───────────────────────────────────────────────
     try:
-        result = await run_stress_test(
-            url, total=total, concurrency=concurrency,
-            progress_cb=on_progress, scan_cb=on_scan,
-        )
-        await do_countdown()
+        if use_http:
+            scheme = "https" if chosen_port in HTTPS_PORTS else "http"
+            if has_scheme:
+                flood_url = url
+            elif chosen_port not in (80, 443):
+                flood_url = f"{scheme}://{host}:{chosen_port}/"
+            else:
+                flood_url = f"{scheme}://{host}/"
+            result = await run_http_flood(flood_url, total, concurrency, on_progress)
+        else:
+            result = await run_tcp_flood(host, chosen_port, total, concurrency, on_progress)
+
+        result["port"] = chosen_port
+        result["open_ports"] = open_ports
+        result["host"] = host
     except Exception as e:
         try:
             await msg.edit_text(
@@ -603,7 +664,7 @@ async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
             pass
         return
 
-    # Final report
+    # ── Final report ────────────────────────────────────────────
     report = format_stress_report(url, result)
     try:
         await msg.delete()
