@@ -442,8 +442,11 @@ async def cb_stress(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await safe_edit(
         callback,
         "🔥 <b>Стресс-тест</b>\n\n"
-        "Отправь ссылку на сайт который хочешь протестировать:\n"
-        "<code>https://mysite.com</code>",
+        "Введи цель для теста:\n\n"
+        "• IP адрес: <code>185.24.10.5</code>\n"
+        "• IP с портом: <code>185.24.10.5:8080</code>\n"
+        "• Домен: <code>mysite.com</code>\n"
+        "• Полная ссылка: <code>https://mysite.com</code>",
         reply_markup=cancel_kb(),
     )
     await callback.answer()
@@ -451,14 +454,28 @@ async def cb_stress(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 @router.message(UserState.stress_waiting_url)
 async def process_stress_url(message: Message, state: FSMContext):
-    url = (message.text or "").strip()
+    import re
+    raw = (message.text or "").strip()
 
-    if not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
+    # Detect bare IP (optionally with port): e.g. 185.24.10.5 or 185.24.10.5:8080
+    ip_pattern = re.compile(
+        r'^(\d{1,3}\.){3}\d{1,3}(:\d+)?(/\S*)?$'
+    )
+    if ip_pattern.match(raw):
+        url = "http://" + raw
+    elif not raw.startswith("http://") and not raw.startswith("https://"):
+        url = "https://" + raw
+    else:
+        url = raw
 
     if not validators.url(url):
         await message.answer(
-            "❌ Некорректная ссылка.\nПример: <code>https://mysite.com</code>",
+            "❌ Некорректный адрес.\n\n"
+            "Можно вводить:\n"
+            "• IP адрес: <code>185.24.10.5</code>\n"
+            "• IP с портом: <code>185.24.10.5:8080</code>\n"
+            "• Домен: <code>mysite.com</code>\n"
+            "• Полная ссылка: <code>https://mysite.com</code>",
             reply_markup=cancel_kb(),
         )
         return
@@ -467,7 +484,7 @@ async def process_stress_url(message: Message, state: FSMContext):
     await state.set_state(UserState.stress_choosing_intensity)
 
     await message.answer(
-        f"🌐 <code>{escape(url)}</code>\n\n"
+        f"🎯 <code>{escape(url)}</code>\n\n"
         "Выбери интенсивность теста:",
         reply_markup=stress_start_kb(),
     )
