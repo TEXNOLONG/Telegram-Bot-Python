@@ -23,6 +23,7 @@ def main_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
             InlineKeyboardButton(text="📋 История", callback_data="history"),
         ],
+        [InlineKeyboardButton(text="🛡️ Проверка DDoS-защиты", callback_data="ddos_check")],
         [
             InlineKeyboardButton(text=sub_label, callback_data="sub"),
             InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"),
@@ -46,9 +47,12 @@ def back_to_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
-            InlineKeyboardButton(text=sub_label, callback_data="sub"),
+            InlineKeyboardButton(text="🛡️ DDoS-защита", callback_data="ddos_check"),
         ],
-        [InlineKeyboardButton(text="◀️ Меню", callback_data="menu")],
+        [
+            InlineKeyboardButton(text=sub_label, callback_data="sub"),
+            InlineKeyboardButton(text="◀️ Меню", callback_data="menu"),
+        ],
     ])
 
 

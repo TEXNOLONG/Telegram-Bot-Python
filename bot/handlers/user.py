@@ -18,6 +18,7 @@ from bot.utils.site_analyzer import analyze_site, format_report, _calc_score
 from bot.utils.stress_test import run_stress_test, format_stress_report
 from bot.utils.ssl_checker import check_ssl, format_ssl_report
 from bot.utils.dns_checker import dns_lookup, check_ports, COMMON_PORTS, format_dns_report
+from bot.utils.ddos_checker import check_ddos_protection, format_ddos_report
 from bot.utils.helpers import safe_edit
 from bot.storage import storage
 
@@ -30,6 +31,7 @@ class UserState(StatesGroup):
     stress_choosing_intensity = State()
     ssl_waiting_url = State()
     dns_waiting_url = State()
+    ddos_waiting_ip = State()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -280,6 +282,12 @@ async def cb_help(callback: CallbackQuery):
         "<b>🌐 DNS / IP:</b>\n"
         "• IP-адреса, страна, хостинг, ASN\n"
         "• Сканирование открытых портов\n\n"
+        "<b>🛡️ Проверка DDoS-защиты:</b>\n"
+        "• Введи свой публичный IP-адрес\n"
+        "• Бот проверит, реально ли провайдер\n"
+        "  защищает тебя от DDoS-атак\n"
+        "• Полезно если провайдер обещал защиту,\n"
+        "  а интернет всё равно падает\n\n"
         "<b>🔥 Стресс-тест:</b>\n"
         "• До 10 000 запросов / 500 потоков\n"
         "• RPS, P50/P95/P99, статусы, ошибки\n\n"
@@ -354,6 +362,56 @@ async def process_dns_url(message: Message, state: FSMContext):
     ports = await check_ports(hostname, list(COMMON_PORTS.keys()))
     await wait.delete()
     report = format_dns_report(hostname, dns, ports)
+    has_sub = storage.has_active_sub(message.from_user.id)
+    await message.answer(report, parse_mode="HTML", reply_markup=back_to_menu_kb(has_sub))
+
+
+# ─── DDoS protection checker ──────────────────────────────────────────────────
+
+@router.callback_query(F.data == "ddos_check")
+async def cb_ddos_check(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(UserState.ddos_waiting_ip)
+    await safe_edit(
+        callback,
+        "🛡️ <b>Проверка DDoS-защиты интернета</b>\n\n"
+        "Эта проверка анализирует, действительно ли ваш провайдер обеспечивает "
+        "защиту от DDoS-атак, как заявляет.\n\n"
+        "📌 <b>Как узнать свой IP-адрес?</b>\n"
+        "Перейдите на <a href=\"https://2ip.ru\">2ip.ru</a> или "
+        "<a href=\"https://whatismyip.com\">whatismyip.com</a> и скопируйте адрес.\n\n"
+        "✏️ <b>Введите ваш публичный IP-адрес:</b>\n"
+        "Пример: <code>85.142.10.55</code>",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(UserState.ddos_waiting_ip)
+async def process_ddos_ip(message: Message, state: FSMContext):
+    raw = (message.text or "").strip()
+
+    import re
+    raw = re.sub(r"^https?://", "", raw).split("/")[0].split(":")[0].strip()
+
+    if not raw or (
+        not re.match(r"^(\d{1,3}\.){3}\d{1,3}$", raw)
+        and not re.match(r"^[0-9a-fA-F:]{2,39}$", raw)
+    ):
+        await message.answer(
+            "❌ Некорректный IP-адрес.\n"
+            "Введи IPv4, например: <code>85.142.10.55</code>",
+            reply_markup=cancel_kb(),
+        )
+        return
+
+    await state.clear()
+    wait = await message.answer(
+        f"🛡️ Проверяю <code>{escape(raw)}</code> на наличие DDoS-защиты…\n"
+        "⏳ ~10–15 сек"
+    )
+    data = await check_ddos_protection(raw)
+    await wait.delete()
+    report = format_ddos_report(data)
     has_sub = storage.has_active_sub(message.from_user.id)
     await message.answer(report, parse_mode="HTML", reply_markup=back_to_menu_kb(has_sub))
 
