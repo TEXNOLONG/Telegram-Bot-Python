@@ -521,71 +521,52 @@ async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
 
     await callback.answer()
 
-    # ── Fake proxy numbers ──────────────────────────────────────
-    proxy_total   = random.randint(8_600, 9_800)
-    proxy_active  = random.randint(int(proxy_total * 0.88), int(proxy_total * 0.96))
-    proxy_countries = random.randint(38, 64)
     hostname = url.removeprefix("https://").removeprefix("http://").split("/")[0]
-
     sep = _sep()
+    scan_lines: list[str] = []
 
-    # Phase 1 — scanning
+    # Phase 1 — port scan (real)
     msg = await callback.message.answer(
         f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
         f"{sep}\n"
         f"🎯 <code>{escape(hostname)}</code>\n"
         f"{sep}\n\n"
-        f"🔍 Сканирую прокси-сети...\n"
-        f"░░░░░░░░░░░░░░░░  0%"
+        f"🔍 Сканирую открытые порты…"
     )
-    await asyncio.sleep(1.2)
 
-    # Phase 2 — found proxies
-    try:
-        await msg.edit_text(
-            f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
-            f"{sep}\n"
-            f"🎯 <code>{escape(hostname)}</code>\n"
-            f"{sep}\n\n"
-            f"🌐 Найдено прокси: <b>{proxy_total:,}</b>\n"
-            f"📡 HTTP · HTTPS · SOCKS4 · SOCKS5\n"
-            f"🗺  Охват: {proxy_countries} стран"
-        )
-    except Exception:
-        pass
-    await asyncio.sleep(1.3)
-
-    # Phase 3 — connecting
-    try:
-        await msg.edit_text(
-            f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
-            f"{sep}\n"
-            f"🎯 <code>{escape(hostname)}</code>\n"
-            f"{sep}\n\n"
-            f"🔌 Подключаюсь через прокси...\n"
-            f"{_bar(proxy_active, proxy_total)}  {proxy_active * 100 // proxy_total}%\n\n"
-            f"✅ Активных: <b>{proxy_active:,}</b> / {proxy_total:,}\n"
-            f"⚙️ Потоков:  <b>{concurrency:,}</b>"
-        )
-    except Exception:
-        pass
-    await asyncio.sleep(1.4)
-
-    # Phase 4 — countdown 3…2…1
-    for n in (3, 2, 1):
+    async def on_scan(line: str):
+        scan_lines.append(line)
         try:
             await msg.edit_text(
                 f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
                 f"{sep}\n"
                 f"🎯 <code>{escape(hostname)}</code>\n"
                 f"{sep}\n\n"
-                f"🚀 Запуск через  <b>{n}...</b>"
+                + "\n".join(scan_lines),
+                parse_mode="HTML",
             )
         except Exception:
             pass
-        await asyncio.sleep(1.0)
 
-    # Phase 5 — live progress during actual test
+    # Phase 2 — countdown 3…2…1
+    async def do_countdown():
+        for n in (3, 2, 1):
+            try:
+                await msg.edit_text(
+                    f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n"
+                    f"{sep}\n"
+                    f"🎯 <code>{escape(hostname)}</code>\n"
+                    f"{sep}\n\n"
+                    + "\n".join(scan_lines) + f"\n\n🚀 Запуск через <b>{n}…</b>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+
+    # Phase 3 — live progress during actual test
+    mode_label = {"http": "HTTP-флуд", "tcp": "TCP-флуд"}
+
     async def on_progress(done: int, total_req: int, success: int, failed: int, rps: float):
         pct = done * 100 // total_req
         sr  = success * 100 // done if done else 0
@@ -600,15 +581,18 @@ async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
                 f"✅ Успешных:  <b>{success:,}</b>  ({sr}%)\n"
                 f"❌ Ошибок:    <b>{failed:,}</b>\n"
                 f"⚡ RPS:        <b>~{rps:.0f}</b>\n"
-                f"{sep}"
+                f"{sep}",
+                parse_mode="HTML",
             )
         except Exception:
             pass
 
     try:
         result = await run_stress_test(
-            url, total=total, concurrency=concurrency, progress_cb=on_progress
+            url, total=total, concurrency=concurrency,
+            progress_cb=on_progress, scan_cb=on_scan,
         )
+        await do_countdown()
     except Exception as e:
         try:
             await msg.edit_text(
