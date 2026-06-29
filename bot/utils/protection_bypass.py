@@ -125,24 +125,76 @@ ACCEPT_ENCODINGS = [
 ]
 
 
+CHROME_VERSIONS = list(range(110, 126))
+FIREFOX_VERSIONS = list(range(109, 127))
+
+_ACCEPT_CHROME = [
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+]
+_ACCEPT_FF = [
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+]
+_PLATFORMS = ['"Windows"', '"macOS"', '"Linux"', '"Android"', '"iOS"']
+_REFERERS = [
+    "https://www.google.com/",
+    "https://www.google.ru/",
+    "https://yandex.ru/",
+    "https://www.bing.com/",
+    "https://duckduckgo.com/",
+    "https://t.co/",
+    "https://vk.com/",
+]
+
+
 def get_random_headers(extra: Optional[dict] = None) -> dict:
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": random.choice(ACCEPT_LANGUAGES),
-        "Accept-Encoding": random.choice(ACCEPT_ENCODINGS),
-        "Connection": random.choice(["keep-alive", "close"]),
-        "Cache-Control": random.choice(["no-cache", "max-age=0", "no-store"]),
-        "DNT": random.choice(["1", "0"]),
-        "Upgrade-Insecure-Requests": "1",
+    ua = random.choice(USER_AGENTS)
+    is_chrome  = ("Chrome" in ua or "Chromium" in ua) and "Firefox" not in ua
+    is_firefox = "Firefox" in ua
+    is_mobile  = any(x in ua for x in ("Mobile", "Android", "iPhone", "iPad"))
+
+    if is_chrome:
+        accept = random.choice(_ACCEPT_CHROME)
+        cv = random.choice(CHROME_VERSIONS)
+        brand = f'"Chromium";v="{cv}", "Not)A;Brand";v="8"'
+        if cv >= 120:
+            brand = f'"Google Chrome";v="{cv}", "Chromium";v="{cv}", "Not-A.Brand";v="99"'
+    else:
+        accept = random.choice(_ACCEPT_FF)
+
+    headers: dict = {
+        "User-Agent":               ua,
+        "Accept":                   accept,
+        "Accept-Language":          random.choice(ACCEPT_LANGUAGES),
+        "Accept-Encoding":          "gzip, deflate, br",
+        "Connection":               "keep-alive",
+        "Cache-Control":            random.choice(["no-cache", "max-age=0"]),
+        "Upgrade-Insecure-Requests":"1",
     }
-    if random.random() < 0.3:
-        headers["Referer"] = random.choice([
-            "https://www.google.com/",
-            "https://www.bing.com/",
-            "https://duckduckgo.com/",
-            "https://yandex.ru/",
-        ])
+
+    # Chrome-specific fingerprint headers
+    if is_chrome:
+        headers["Sec-Fetch-Dest"]      = "document"
+        headers["Sec-Fetch-Mode"]      = "navigate"
+        headers["Sec-Fetch-Site"]      = random.choice(["none", "cross-site", "same-origin"])
+        headers["Sec-Fetch-User"]      = "?1"
+        headers["Sec-CH-UA"]           = brand
+        headers["Sec-CH-UA-Mobile"]    = "?1" if is_mobile else "?0"
+        headers["Sec-CH-UA-Platform"]  = random.choice(_PLATFORMS)
+        if random.random() < 0.4:
+            headers["Priority"] = "u=0, i"
+    elif is_firefox:
+        headers["Sec-Fetch-Dest"] = "document"
+        headers["Sec-Fetch-Mode"] = "navigate"
+        headers["Sec-Fetch-Site"] = random.choice(["none", "cross-site"])
+        headers["Sec-Fetch-User"] = "?1"
+        headers["DNT"]            = random.choice(["1", "0"])
+
+    # Realistic referer (35% of requests look like they came from a search engine)
+    if random.random() < 0.35:
+        headers["Referer"] = random.choice(_REFERERS)
+
     if extra:
         headers.update(extra)
     return headers
