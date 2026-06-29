@@ -111,6 +111,8 @@ async def analyze_site(url: str) -> dict:
                     await asyncio.gather(
                         _check_extras(session, url, resp.headers, result),
                         _check_vulnerabilities(session, url, html, resp.headers, result),
+                        _check_ssl_cert(url, result),
+                        _check_exposed_files(session, url, result),
                     )
 
                 score = _calc_score(result)
@@ -737,6 +739,130 @@ async def _check_vulnerabilities(session: aiohttp.ClientSession, url: str, html:
         vulns.append(("MEDIUM", "Стек-трейс виден в HTML — утечка внутренней структуры"))
 
     result["vulnerabilities"] = vulns
+
+
+async def _check_ssl_cert(url: str, result: dict) -> None:
+    """Check SSL certificate details: validity, expiry, issuer, algorithm."""
+    if not url.startswith("https://"):
+        return
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or 443
+    if not host:
+        return
+
+    from datetime import datetime
+
+    def _get_cert_info():
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=10) as raw_sock:
+            with ctx.wrap_socket(raw_sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert()
+                cipher = ssock.cipher()
+                return cert, cipher
+
+    try:
+        loop = asyncio.get_event_loop()
+        cert, cipher = await loop.run_in_executor(None, _get_cert_info)
+
+        # Expiry date
+        not_after_str = cert.get("notAfter", "")
+        if not_after_str:
+            not_after = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
+            days_left = (not_after - datetime.utcnow()).days
+            if days_left < 0:
+                result["errors"].append("🔴 SSL сертификат просрочен!")
+            elif days_left < 14:
+                result["errors"].append(f"🔴 SSL истекает через {days_left} дней — срочно обновите!")
+            elif days_left < 30:
+                result["warnings"].append(f"⚠️ SSL: сертификат истекает через {days_left} дней")
+            elif days_left < 90:
+                result["info"].append(f"🟡 SSL: действителен ещё {days_left} дней")
+            else:
+                result["info"].append(f"✅ SSL: действителен ещё {days_left} дней")
+
+        # Issuer
+        issuer_dict = {x[0][0]: x[0][1] for x in cert.get("issuer", ())}
+        org = issuer_dict.get("organizationName", issuer_dict.get("commonName", "Unknown"))
+        result["info"].append(f"🏢 SSL издатель: <b>{escape(org[:60])}</b>")
+
+        # Subject Alternative Names
+        sans = cert.get("subjectAltName", ())
+        san_domains = [v for t, v in sans if t == "DNS"]
+        if san_domains:
+            result["info"].append(f"🔑 SSL SAN: {len(san_domains)} домен(ов) в сертификате")
+
+        # Cipher suite
+        if cipher:
+            cipher_name, proto, bits = cipher[0], cipher[1], cipher[2]
+            if bits and bits < 128:
+                result["warnings"].append(f"⚠️ SSL: слабый шифр {cipher_name} ({bits} бит)")
+            else:
+                result["info"].append(f"🔐 SSL шифр: <code>{escape(str(cipher_name))}</code> / {proto} / {bits} бит")
+
+    except ssl.SSLCertVerificationError as e:
+        result["errors"].append(f"❌ SSL: ошибка верификации сертификата ({escape(str(e)[:80])})")
+    except ssl.CertificateError as e:
+        result["errors"].append(f"❌ SSL: несоответствие имени хоста ({escape(str(e)[:80])})")
+    except ConnectionRefusedError:
+        result["warnings"].append("⚠️ SSL: порт 443 закрыт или отказано в подключении")
+    except Exception:
+        pass
+
+
+async def _check_exposed_files(session: aiohttp.ClientSession, url: str, result: dict) -> None:
+    """Check for dangerous exposed files: .env, .git, backup, admin panels."""
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    targets = [
+        ("/.env",              "CRITICAL", ".env файл открыт — утечка секретов и паролей"),
+        ("/.git/config",       "CRITICAL", ".git/config открыт — утечка исходного кода"),
+        ("/.git/HEAD",         "HIGH",     ".git HEAD открыт — репозиторий публичен"),
+        ("/wp-config.php",     "CRITICAL", "wp-config.php доступен — критическая утечка WordPress"),
+        ("/config.php",        "HIGH",     "config.php доступен — возможная утечка конфигурации"),
+        ("/backup.sql",        "CRITICAL", "backup.sql открыт — дамп базы данных публичен"),
+        ("/dump.sql",          "CRITICAL", "dump.sql открыт — дамп базы данных публичен"),
+        ("/phpinfo.php",       "HIGH",     "phpinfo.php открыт — утечка конфигурации PHP"),
+        ("/server-status",     "MEDIUM",   "Apache server-status открыт"),
+        ("/nginx_status",      "MEDIUM",   "Nginx status открыт"),
+        ("/.htpasswd",         "HIGH",     ".htpasswd открыт — хэши паролей публичны"),
+        ("/admin",             "LOW",      "Панель /admin доступна (проверьте защиту)"),
+        ("/administrator",     "LOW",      "Панель /administrator доступна"),
+        ("/wp-admin",          "LOW",      "WordPress /wp-admin доступен"),
+        ("/.DS_Store",         "LOW",      ".DS_Store открыт — структура папок видна"),
+    ]
+
+    exposed = []
+    sem = asyncio.Semaphore(5)
+
+    async def _probe(path, severity, label):
+        async with sem:
+            try:
+                async with session.get(
+                    base + path,
+                    timeout=aiohttp.ClientTimeout(total=6),
+                    allow_redirects=False,
+                    ssl=False,
+                ) as r:
+                    if r.status in (200, 206):
+                        content = await r.read()
+                        if len(content) > 10:
+                            exposed.append((severity, label))
+            except Exception:
+                pass
+
+    await asyncio.gather(*[_probe(p, s, l) for p, s, l in targets])
+
+    for sev, label in exposed:
+        sev_emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}.get(sev, "⚪")
+        if sev in ("CRITICAL", "HIGH"):
+            result["errors"].append(f"{sev_emoji} [{sev}] {label}")
+        else:
+            result["warnings"].append(f"⚠️ [{sev}] {label}")
+
+    if not exposed:
+        result["info"].append("✅ Чувствительные файлы не обнаружены (15 проверок)")
 
 
 def _calc_score(result: dict) -> int:

