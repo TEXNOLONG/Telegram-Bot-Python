@@ -79,7 +79,10 @@ async def analyze_site(url: str) -> dict:
                 _check_content_quality(soup, html, result)
                 _check_mobile(soup, result)
                 _check_social(soup, result)
-                await _check_extras(session, url, resp.headers, result)
+                await asyncio.gather(
+                    _check_extras(session, url, resp.headers, result),
+                    _check_vulnerabilities(session, url, html, resp.headers, result),
+                )
 
             score = _calc_score(result)
             result["score"] = score
@@ -614,6 +617,155 @@ def _check_social(soup: BeautifulSoup, result: dict) -> None:
         result["info"].append("📣 Соцсети на странице: " + ", ".join(found_socials))
 
 
+async def _check_vulnerabilities(session: aiohttp.ClientSession, url: str, html: str, headers, result: dict) -> None:
+    """Active vulnerability scan: exposed files, misconfigs, dangerous methods, CORS, etc."""
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    vulns = []
+
+    # 1. Sensitive file exposure
+    sensitive_paths = [
+        ("/.git/HEAD",         "Открыт .git — исходный код может быть скачан"),
+        ("/.env",              "Открыт .env — утечка переменных окружения / паролей"),
+        ("/.htaccess",         "Открыт .htaccess — конфигурация сервера видна"),
+        ("/config.php",        "Открыт config.php — возможна утечка данных БД"),
+        ("/wp-config.php",     "Открыт wp-config.php — критическая утечка WordPress"),
+        ("/phpinfo.php",       "phpinfo() доступен публично — раскрыта конфигурация PHP"),
+        ("/server-status",     "Apache server-status открыт — утечка запросов"),
+        ("/adminer.php",       "Adminer БД-менеджер доступен публично"),
+        ("/phpmyadmin/",       "phpMyAdmin открыт публично"),
+        ("/.DS_Store",         "Открыт .DS_Store — структура директорий раскрыта"),
+        ("/backup.sql",        "Открыт backup.sql — дамп базы данных"),
+        ("/dump.sql",          "Открыт dump.sql — дамп базы данных"),
+        ("/composer.json",     "Открыт composer.json — зависимости проекта раскрыты"),
+        ("/package.json",      "Открыт package.json — зависимости проекта раскрыты"),
+        ("/.well-known/security.txt", None),
+    ]
+
+    tasks = [_probe_path(session, base, path, label) for path, label in sensitive_paths]
+    probe_results = await asyncio.gather(*tasks, return_exceptions=True)
+    for item in probe_results:
+        if isinstance(item, str):
+            vulns.append(("CRITICAL", item))
+
+    # 2. Admin panel detection
+    admin_paths = [
+        "/admin", "/admin/", "/administrator", "/wp-admin/",
+        "/panel", "/dashboard", "/cpanel", "/manage",
+    ]
+    admin_tasks = [_probe_admin(session, base, p) for p in admin_paths]
+    admin_results = await asyncio.gather(*admin_tasks, return_exceptions=True)
+    found_admins = [r for r in admin_results if isinstance(r, str)]
+    if found_admins:
+        vulns.append(("HIGH", f"Панели управления открыты: {', '.join(found_admins[:3])}"))
+
+    # 3. Dangerous HTTP methods
+    try:
+        async with session.options(
+            url,
+            timeout=aiohttp.ClientTimeout(total=5),
+            ssl=False,
+        ) as resp:
+            allow = resp.headers.get("Allow", "") or resp.headers.get("Access-Control-Allow-Methods", "")
+            dangerous = [m for m in ["PUT", "DELETE", "TRACE", "CONNECT", "PATCH"] if m in allow]
+            if dangerous:
+                vulns.append(("HIGH", f"Опасные HTTP-методы разрешены: {', '.join(dangerous)}"))
+    except Exception:
+        pass
+
+    # 4. CORS misconfiguration
+    try:
+        async with session.get(
+            url,
+            headers={"Origin": "https://evil.com"},
+            timeout=aiohttp.ClientTimeout(total=5),
+            ssl=False,
+        ) as resp:
+            acao = resp.headers.get("Access-Control-Allow-Origin", "")
+            acac = resp.headers.get("Access-Control-Allow-Credentials", "")
+            if acao == "*":
+                vulns.append(("MEDIUM", "CORS: Access-Control-Allow-Origin: * — любой сайт может читать ответы"))
+            elif acao == "https://evil.com":
+                sev = "CRITICAL" if acac.lower() == "true" else "HIGH"
+                vulns.append((sev, f"CORS уязвим: отражает Origin запроса{'+ credentials' if acac else ''}"))
+    except Exception:
+        pass
+
+    # 5. Clickjacking
+    xfo = headers.get("X-Frame-Options", "")
+    csp = headers.get("Content-Security-Policy", "")
+    has_frame_guard = xfo or ("frame-ancestors" in csp.lower())
+    if not has_frame_guard:
+        vulns.append(("MEDIUM", "Clickjacking: X-Frame-Options отсутствует — страницу можно встроить в iframe"))
+
+    # 6. Mixed content
+    if url.startswith("https://"):
+        html_lower = html.lower()
+        if re.search(r'src=["\']http://', html_lower) or re.search(r'href=["\']http://', html_lower):
+            vulns.append(("MEDIUM", "Mixed Content: HTTP ресурсы на HTTPS странице"))
+
+    # 7. Server version disclosure
+    server = headers.get("Server", "")
+    if re.search(r"/([\d.]+)", server):
+        vulns.append(("LOW", f"Версия сервера раскрыта в заголовке Server: {escape(server[:40])}"))
+
+    x_powered = headers.get("X-Powered-By", "")
+    if x_powered:
+        vulns.append(("LOW", f"Технология раскрыта в X-Powered-By: {escape(x_powered[:40])}"))
+
+    # 8. Missing security headers (as vulns)
+    if not headers.get("Content-Security-Policy"):
+        vulns.append(("MEDIUM", "Отсутствует Content-Security-Policy — возможен XSS"))
+    if not headers.get("X-Content-Type-Options"):
+        vulns.append(("LOW", "Отсутствует X-Content-Type-Options — MIME-sniffing уязвимость"))
+
+    # 9. Cookie flags
+    set_cookie = headers.get("Set-Cookie", "")
+    if set_cookie:
+        if "httponly" not in set_cookie.lower():
+            vulns.append(("MEDIUM", "Cookie без HttpOnly — доступны через JavaScript (XSS риск)"))
+        if "secure" not in set_cookie.lower() and url.startswith("https://"):
+            vulns.append(("LOW", "Cookie без Secure флага — могут передаваться по HTTP"))
+        if "samesite" not in set_cookie.lower():
+            vulns.append(("LOW", "Cookie без SameSite — возможна CSRF атака"))
+
+    result["vulnerabilities"] = vulns
+
+
+async def _probe_path(session, base: str, path: str, label) -> str | None:
+    if label is None:
+        return None
+    try:
+        async with session.get(
+            base + path,
+            timeout=aiohttp.ClientTimeout(total=5),
+            allow_redirects=False,
+            ssl=False,
+        ) as resp:
+            if resp.status == 200:
+                body = await resp.read()
+                if len(body) > 10:
+                    return label
+    except Exception:
+        pass
+    return None
+
+
+async def _probe_admin(session, base: str, path: str) -> str | None:
+    try:
+        async with session.get(
+            base + path,
+            timeout=aiohttp.ClientTimeout(total=4),
+            allow_redirects=True,
+            ssl=False,
+        ) as resp:
+            if resp.status in (200, 401, 403):
+                return path
+    except Exception:
+        pass
+    return None
+
+
 async def _check_extras(session: aiohttp.ClientSession, url: str, headers, result: dict) -> None:
     parsed = urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}"
@@ -713,46 +865,43 @@ def _calc_score(data: dict) -> int:
 
 def format_report(data: dict) -> str:
     score = data.get("score", 0)
-    if score >= 85:
-        emoji = "🟢"
-    elif score >= 65:
-        emoji = "🟡"
-    elif score >= 45:
-        emoji = "🟠"
-    else:
-        emoji = "🔴"
-
     perf = data.get("performance", {})
+    vulns = data.get("vulnerabilities", [])
+    crit_vulns = [v for s, v in vulns if s == "CRITICAL"]
+    high_vulns = [v for s, v in vulns if s == "HIGH"]
+
     lines = [
-        f"🌐 <b>Анализ сайта</b>",
+        f"<b>Анализ сайта</b>",
         f"<code>{escape(data['url'])}</code>",
         "",
-        f"{emoji} <b>Оценка: {score}/100</b>  · {len(data.get('errors',[]))} ошибок · {len(data.get('warnings',[]))} предупреждений",
+        f"<b>Оценка: {score}/100</b>  —  {len(data.get('errors',[]))} ошибок, {len(data.get('warnings',[]))} предупреждений",
     ]
 
     if perf.get("status_code"):
-        lines.append(f"📡 HTTP: <b>{perf['status_code']}</b>  |  ⏱ {perf.get('response_time', 0)} мс")
+        lines.append(f"HTTP: <b>{perf['status_code']}</b>  |  {perf.get('response_time', 0)} мс")
+
+    if vulns:
+        lines.append(f"\n<b>Уязвимости ({len(vulns)}):</b>")
+        for sev, msg in vulns[:8]:
+            tag = {"CRITICAL": "[КРИТ]", "HIGH": "[ВЫСОК]", "MEDIUM": "[СРЕДН]", "LOW": "[НЗК]"}.get(sev, "")
+            lines.append(f"  {tag} {msg}")
+        if len(vulns) > 8:
+            lines.append(f"  ...ещё {len(vulns)-8} — в полном отчёте")
 
     if data.get("errors"):
-        lines.append("\n<b>🔴 Критические ошибки:</b>")
-        lines.extend(f"  {e}" for e in data["errors"])
+        lines.append("\n<b>Ошибки:</b>")
+        lines.extend(f"  {e}" for e in data["errors"][:5])
 
     if data.get("warnings"):
-        lines.append("\n<b>🟡 Предупреждения:</b>")
-        lines.extend(f"  {w}" for w in data["warnings"][:10])
-        if len(data["warnings"]) > 10:
-            lines.append(f"  ...и ещё {len(data['warnings'])-10} (см. отчёт)")
+        lines.append("\n<b>Предупреждения:</b>")
+        lines.extend(f"  {w}" for w in data["warnings"][:6])
 
     if data.get("seo"):
-        lines.append("\n<b>🔎 SEO:</b>")
-        lines.extend(f"  {s}" for s in data["seo"][:8])
+        lines.append("\n<b>SEO:</b>")
+        lines.extend(f"  {s}" for s in data["seo"][:5])
 
     if data.get("tech"):
-        lines.append("\n<b>🛠 Стек:</b>")
-        lines.extend(f"  {t}" for t in data["tech"][:6])
-
-    if data.get("info"):
-        lines.append("\n<b>📊 Детали:</b>")
-        lines.extend(f"  {i}" for i in data["info"][:8])
+        lines.append("\n<b>Стек:</b>")
+        lines.extend(f"  {t}" for t in data["tech"][:5])
 
     return "\n".join(lines)

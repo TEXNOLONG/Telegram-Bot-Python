@@ -3,745 +3,1191 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Отчёт · {{ (report.report_id or '')[:8].upper() }} · LoadTest Pro</title>
+  <title>LoadTest Pro — Отчёт</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/aos@2.3.1/dist/aos.css">
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #050508;
-      --surface: #0c0c14;
-      --surface2: #111120;
-      --border: rgba(139,92,246,.12);
-      --accent: #8b5cf6;
-      --accent2: #6366f1;
-      --accent3: #a78bfa;
-      --green: #10b981;
-      --red: #ef4444;
-      --yellow: #f59e0b;
-      --cyan: #06b6d4;
-      --text: #e2e8f0;
-      --muted: #64748b;
-      --muted2: #334155;
+      --red:       #e53935;
+      --red-dark:  #b71c1c;
+      --red-dim:   #7f0000;
+      --red-glow:  rgba(229,57,53,.35);
+      --red-soft:  rgba(229,57,53,.12);
+      --bg:        #0a0a0a;
+      --bg2:       #111111;
+      --bg3:       #181818;
+      --bg4:       #202020;
+      --border:    rgba(229,57,53,.18);
+      --txt:       #f0f0f0;
+      --txt2:      #aaa;
+      --txt3:      #666;
+      --green:     #43a047;
+      --yellow:    #f9a825;
+      --blue:      #1e88e5;
+      --mono:      'JetBrains Mono', monospace;
+      --sans:      'Inter', sans-serif;
     }
-    html { scroll-behavior: smooth; }
+    *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+    html { scroll-behavior:smooth; }
     body {
-      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      font-family: var(--sans);
       background: var(--bg);
-      color: var(--text);
+      color: var(--txt);
       min-height: 100vh;
       overflow-x: hidden;
     }
 
-    /* Animated background */
+    /* Animated background grid */
     body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      z-index: 0;
-      pointer-events: none;
-      background:
-        radial-gradient(ellipse 80% 50% at 20% -10%, rgba(139,92,246,.08) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 40% at 80% 110%, rgba(99,102,241,.06) 0%, transparent 60%);
-    }
-    body::after {
-      content: '';
-      position: fixed;
-      inset: 0;
-      z-index: 0;
-      pointer-events: none;
+      content:'';
+      position:fixed;
+      inset:0;
       background-image:
-        linear-gradient(rgba(139,92,246,.04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(139,92,246,.04) 1px, transparent 1px);
+        linear-gradient(rgba(229,57,53,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(229,57,53,.04) 1px, transparent 1px);
       background-size: 40px 40px;
+      pointer-events:none;
+      z-index:0;
     }
 
-    main { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 40px 20px 100px; }
+    /* Top scanline effect */
+    body::after {
+      content:'';
+      position:fixed;
+      top:0;left:0;right:0;
+      height:2px;
+      background: linear-gradient(90deg, transparent, var(--red), transparent);
+      z-index:100;
+      animation: scanline 3s ease-in-out infinite;
+    }
+    @keyframes scanline {
+      0%,100%{ opacity:.4; transform:scaleX(.3); }
+      50%{ opacity:1; transform:scaleX(1); }
+    }
 
-    /* ── Header ── */
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 20px 80px;
+      position: relative;
+      z-index:1;
+    }
+
+    /* ── Header ─────────────────────────────────────── */
     .header {
-      display: flex; align-items: center; justify-content: space-between;
-      flex-wrap: wrap; gap: 16px;
-      padding-bottom: 32px;
+      padding: 40px 0 32px;
       border-bottom: 1px solid var(--border);
       margin-bottom: 40px;
     }
-    .logo { display: flex; align-items: center; gap: 14px; }
-    .logo-icon {
-      width: 52px; height: 52px;
-      background: linear-gradient(135deg, var(--accent), var(--accent2));
-      border-radius: 16px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 22px;
-      box-shadow: 0 8px 32px rgba(139,92,246,.3);
-    }
-    .logo h1 { font-size: 1.25rem; font-weight: 800; color: #fff; letter-spacing: -.02em; }
-    .logo-sub { font-size: .72rem; color: var(--muted); display: block; margin-top: 2px; }
-    .badge {
-      padding: 5px 14px; border-radius: 100px;
-      font-size: .72rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-    }
-    .badge-pro   { background: rgba(245,158,11,.1);  color: var(--yellow); border: 1px solid rgba(245,158,11,.2); }
-    .badge-lite  { background: rgba(99,102,241,.1);  color: var(--accent2); border: 1px solid rgba(99,102,241,.2); }
-    .badge-flood { background: rgba(239,68,68,.1);   color: var(--red);    border: 1px solid rgba(239,68,68,.2); }
-    .badge-analysis { background: rgba(16,185,129,.1); color: var(--green); border: 1px solid rgba(16,185,129,.2); }
-
-    /* ── Target bar ── */
-    .target {
-      display: flex; align-items: center; gap: 14px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 18px 22px;
-      margin-bottom: 36px;
-      word-break: break-all;
-    }
-    .target-icon { color: var(--accent); font-size: 1.2rem; flex-shrink: 0; }
-    .target-url { font-family: 'SFMono-Regular', Consolas, monospace; font-size: .9rem; color: #fff; flex: 1; }
-    .target-meta { font-size: .72rem; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
-
-    /* ── Section label ── */
-    .sec-label {
-      font-size: .68rem; font-weight: 700; color: var(--muted);
-      text-transform: uppercase; letter-spacing: .12em;
-      display: flex; align-items: center; gap: 8px;
-      margin-bottom: 16px;
-    }
-    .sec-label i { color: var(--accent); }
-
-    /* ── Metrics grid ── */
-    .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; margin-bottom: 36px; }
-    .metric {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 22px 20px 18px;
-      position: relative; overflow: hidden;
-      transition: border-color .2s, transform .2s;
-    }
-    .metric:hover { border-color: rgba(139,92,246,.35); transform: translateY(-2px); }
-    .metric::before {
-      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
-      opacity: 0; transition: opacity .2s;
-    }
-    .metric:hover::before { opacity: 1; }
-    .metric-val { font-size: 2rem; font-weight: 800; color: #fff; line-height: 1; letter-spacing: -.02em; }
-    .metric-val small { font-size: 1rem; font-weight: 400; color: var(--muted); }
-    .metric-key { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 8px; }
-    .metric-icon { position: absolute; right: 16px; top: 16px; font-size: 1.1rem; opacity: .15; }
-
-    /* ── Chart box ── */
-    .chart-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 28px;
-      margin-bottom: 36px;
-    }
-
-    /* ── Status codes ── */
-    .codes { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 36px; }
-    .code-chip {
-      padding: 7px 16px; border-radius: 100px;
-      font-size: .8rem; font-weight: 600; display: flex; align-items: center; gap: 6px;
-    }
-    .c2 { background: rgba(16,185,129,.1);  color: var(--green);  border: 1px solid rgba(16,185,129,.2); }
-    .c3 { background: rgba(245,158,11,.1);  color: var(--yellow); border: 1px solid rgba(245,158,11,.2); }
-    .c4 { background: rgba(239,68,68,.1);   color: var(--red);    border: 1px solid rgba(239,68,68,.2); }
-    .c5 { background: rgba(239,68,68,.15);  color: #fca5a5;       border: 1px solid rgba(239,68,68,.3); }
-    .c0 { background: rgba(100,116,139,.1); color: var(--muted);  border: 1px solid rgba(100,116,139,.2); }
-
-    /* ── Protection box ── */
-    .prot-box {
-      display: flex; align-items: center; gap: 16px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 22px 26px;
-      margin-bottom: 36px;
-    }
-    .prot-icon { font-size: 2.2rem; flex-shrink: 0; }
-    .prot-name { font-size: 1.05rem; font-weight: 700; color: #fff; }
-    .prot-sub  { font-size: .8rem; color: var(--muted); margin-top: 4px; }
-
-    /* ── Method box ── */
-    .method-box {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;
-      margin-bottom: 36px;
-    }
-    .method-chip {
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 14px 16px;
-      text-align: center;
-    }
-    .method-chip .method-val { font-size: 1.3rem; font-weight: 700; color: #fff; }
-    .method-chip .method-key { font-size: .68rem; color: var(--muted); text-transform: uppercase; margin-top: 4px; }
-
-    /* ── Verdict ── */
-    .verdict {
-      display: flex; align-items: center; gap: 18px;
-      border-radius: 18px;
-      padding: 24px 28px;
-      margin-bottom: 36px;
-    }
-    .verdict-green { background: linear-gradient(135deg, rgba(16,185,129,.08), rgba(16,185,129,.03)); border: 1px solid rgba(16,185,129,.2); }
-    .verdict-yellow { background: linear-gradient(135deg, rgba(245,158,11,.08), rgba(245,158,11,.03)); border: 1px solid rgba(245,158,11,.2); }
-    .verdict-red { background: linear-gradient(135deg, rgba(239,68,68,.08), rgba(239,68,68,.03)); border: 1px solid rgba(239,68,68,.2); }
-    .verdict-icon { font-size: 2.4rem; flex-shrink: 0; }
-    .verdict h3 { font-size: 1.1rem; font-weight: 700; color: #fff; }
-    .verdict p  { font-size: .82rem; color: var(--muted); margin-top: 4px; }
-
-    /* ── Analysis layout ── */
-    .score-hero {
-      text-align: center;
-      padding: 48px 0 40px;
-      position: relative;
-    }
-    .score-ring {
-      display: inline-block;
-      position: relative;
-      width: 160px; height: 160px;
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
       margin-bottom: 20px;
     }
-    .score-ring svg { transform: rotate(-90deg); }
-    .score-ring-center {
-      position: absolute; inset: 0;
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
+    .header-logo .icon {
+      width: 44px; height: 44px;
+      background: var(--red);
+      border-radius: 10px;
+      display: grid; place-items: center;
+      font-size: 20px;
+      box-shadow: 0 0 20px var(--red-glow);
     }
-    .score-num {
-      font-size: 3.2rem; font-weight: 900;
-      background: linear-gradient(135deg, var(--accent3), var(--accent2));
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-      line-height: 1;
+    .header-logo .brand {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--red);
     }
-    .score-label { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
+    .header-url {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--txt2);
+      word-break: break-all;
+    }
+    .header-url span { color: var(--red); }
+    .header-meta {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--txt3);
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
 
-    .score-pills { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
-    .score-pill {
-      padding: 5px 14px; border-radius: 100px; font-size: .78rem; font-weight: 600;
-      display: flex; align-items: center; gap: 6px;
-    }
-    .pill-err  { background: rgba(239,68,68,.1);  color: var(--red);    border: 1px solid rgba(239,68,68,.2); }
-    .pill-warn { background: rgba(245,158,11,.1); color: var(--yellow); border: 1px solid rgba(245,158,11,.2); }
-    .pill-ok   { background: rgba(16,185,129,.1); color: var(--green);  border: 1px solid rgba(16,185,129,.2); }
-
-    .perf-bar {
-      display: flex; align-items: center; gap: 14px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 14px; padding: 16px 20px; margin-bottom: 12px;
-    }
-    .perf-bar-icon { font-size: 1.2rem; color: var(--accent); flex-shrink: 0; }
-    .perf-bar-label { font-size: .82rem; color: var(--muted); flex: 1; }
-    .perf-bar-val { font-size: .9rem; font-weight: 700; color: #fff; }
-
-    /* ── Findings panels ── */
-    .findings-grid {
+    /* ── Score hero ───────────────────────────────────── */
+    .score-hero {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 16px;
-      margin-bottom: 36px;
-    }
-    .finding-panel {
-      background: var(--surface);
+      grid-template-columns: auto 1fr;
+      gap: 40px;
+      align-items: center;
+      background: var(--bg2);
       border: 1px solid var(--border);
-      border-radius: 18px;
+      border-radius: 16px;
+      padding: 36px 40px;
+      margin-bottom: 32px;
+      position: relative;
       overflow: hidden;
     }
-    .finding-panel-head {
-      padding: 14px 18px;
-      border-bottom: 1px solid var(--border);
-      font-size: .72rem; font-weight: 700;
-      text-transform: uppercase; letter-spacing: .1em;
-      color: var(--muted);
-      display: flex; align-items: center; gap: 8px;
+    .score-hero::before {
+      content:'';
+      position:absolute;
+      top:-60px; right:-60px;
+      width:200px; height:200px;
+      background: radial-gradient(circle, var(--red-glow), transparent 70%);
+      pointer-events:none;
     }
-    .finding-panel-head i { color: var(--accent); }
-    .finding-list { padding: 8px 0; }
-    .finding-item {
-      display: flex; align-items: flex-start; gap: 10px;
-      padding: 10px 18px;
-      border-bottom: 1px solid rgba(255,255,255,.03);
-      font-size: .82rem; color: var(--text);
-      line-height: 1.45;
+    .score-ring-wrap {
+      position: relative;
+      width: 150px; height: 150px;
     }
-    .finding-item:last-child { border-bottom: none; }
-    .finding-item.err  { color: #fca5a5; }
-    .finding-item.warn { color: #fde68a; }
-    .finding-item.ok   { color: #6ee7b7; }
-    .finding-item.info { color: var(--text); }
+    .score-ring-wrap canvas { width: 150px!important; height: 150px!important; }
+    .score-center {
+      position: absolute;
+      inset:0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .score-num {
+      font-size: 38px;
+      font-weight: 900;
+      line-height:1;
+      color: var(--txt);
+    }
+    .score-max { font-size: 13px; color: var(--txt3); margin-top:2px; }
+    .score-info h1 {
+      font-size: 26px;
+      font-weight: 800;
+      margin-bottom: 10px;
+    }
+    .score-info .tagline {
+      color: var(--txt2);
+      font-size: 14px;
+      margin-bottom: 18px;
+    }
+    .stat-pills {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      padding: 5px 14px;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid;
+    }
+    .pill-red   { background:rgba(229,57,53,.12); border-color:rgba(229,57,53,.4); color:#ef9a9a; }
+    .pill-green { background:rgba(67,160,71,.12);  border-color:rgba(67,160,71,.4);  color:#a5d6a7; }
+    .pill-yellow{ background:rgba(249,168,37,.12); border-color:rgba(249,168,37,.4); color:#fff59d; }
+    .pill-blue  { background:rgba(30,136,229,.12); border-color:rgba(30,136,229,.4); color:#90caf9; }
+    .pill-grey  { background:rgba(255,255,255,.06); border-color:rgba(255,255,255,.12); color:var(--txt2); }
 
-    /* ── Security header grid ── */
-    .sec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 36px; }
-    .sec-item {
-      display: flex; align-items: center; gap: 10px;
-      background: var(--surface);
+    /* ── Section titles ───────────────────────────────── */
+    .section { margin-bottom: 32px; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--red);
+      margin-bottom: 16px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-title .icon { font-size:14px; }
+
+    /* ── Charts grid ──────────────────────────────────── */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px,1fr));
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+    .chart-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px 24px;
+      position: relative;
+      overflow: hidden;
+    }
+    .chart-card::after {
+      content:'';
+      position:absolute;
+      top:0; left:0; right:0;
+      height:2px;
+      background: linear-gradient(90deg, var(--red), transparent);
+    }
+    .chart-card h3 {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--txt2);
+      margin-bottom: 16px;
+    }
+    .chart-card .chart-wrap { position:relative; }
+
+    /* ── Stats row ──────────────────────────────────── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px,1fr));
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+    .stat-card {
+      background: var(--bg2);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 12px 14px;
-      font-size: .78rem;
-    }
-    .sec-item-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .sec-item-dot.on  { background: var(--green); box-shadow: 0 0 6px rgba(16,185,129,.5); }
-    .sec-item-dot.off { background: var(--red);   box-shadow: 0 0 6px rgba(239,68,68,.5); }
-    .sec-item-name { color: var(--text); }
-
-    /* ── Tech pills ── */
-    .tech-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 36px; }
-    .tech-pill {
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: 100px;
-      padding: 6px 14px;
-      font-size: .8rem; color: var(--text);
-    }
-
-    /* ── Footer ── */
-    footer {
+      padding: 18px 16px;
       text-align: center;
-      padding: 40px 0 0;
-      font-size: .75rem;
-      color: var(--muted);
-      border-top: 1px solid var(--border);
+      position: relative;
+      overflow: hidden;
+      transition: border-color .2s, transform .2s;
     }
-    footer strong { color: var(--accent); }
-    .footer-id {
-      display: inline-block; margin-top: 8px;
-      font-family: monospace; font-size: .72rem;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 6px; padding: 2px 8px;
-      color: var(--muted);
+    .stat-card:hover { border-color: var(--red); transform:translateY(-2px); }
+    .stat-card .label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--txt3);
+      margin-bottom: 8px;
+    }
+    .stat-card .value {
+      font-size: 26px;
+      font-weight: 900;
+      color: var(--txt);
+      line-height:1;
+    }
+    .stat-card .unit {
+      font-size: 11px;
+      color: var(--txt3);
+      margin-top: 3px;
     }
 
-    @media (max-width: 640px) {
-      .header { flex-direction: column; align-items: flex-start; }
-      .target-meta { display: none; }
-      .metrics { grid-template-columns: repeat(2, 1fr); }
-      .score-hero { padding: 28px 0 24px; }
+    /* ── Vuln table ──────────────────────────────────── */
+    .vuln-list { display: flex; flex-direction:column; gap:8px; }
+    .vuln-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      background: var(--bg3);
+      border-radius: 10px;
+      padding: 14px 16px;
+      border-left: 3px solid;
+      transition: background .2s;
     }
+    .vuln-item:hover { background: var(--bg4); }
+    .vuln-item.sev-CRITICAL { border-color:#e53935; }
+    .vuln-item.sev-HIGH     { border-color:#f4511e; }
+    .vuln-item.sev-MEDIUM   { border-color:#f9a825; }
+    .vuln-item.sev-LOW      { border-color:#66bb6a; }
+    .vuln-sev {
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      margin-top:1px;
+    }
+    .sev-CRITICAL .vuln-sev { background:rgba(229,57,53,.25); color:#ef9a9a; }
+    .sev-HIGH     .vuln-sev { background:rgba(244,81,30,.2);  color:#ffab91; }
+    .sev-MEDIUM   .vuln-sev { background:rgba(249,168,37,.2); color:#fff59d; }
+    .sev-LOW      .vuln-sev { background:rgba(102,187,106,.15); color:#a5d6a7; }
+    .vuln-text { font-size:13px; color:var(--txt2); line-height:1.5; }
+
+    /* ── Findings list ───────────────────────────────── */
+    .findings { display:flex; flex-direction:column; gap:6px; }
+    .finding {
+      display:flex;
+      align-items:flex-start;
+      gap:10px;
+      padding:10px 14px;
+      background:var(--bg3);
+      border-radius:8px;
+      font-size:13px;
+      color:var(--txt2);
+      line-height:1.5;
+      border:1px solid transparent;
+      transition: border-color .15s;
+    }
+    .finding:hover { border-color: var(--border); }
+    .finding .dot {
+      width:7px; height:7px;
+      border-radius:50%;
+      flex-shrink:0;
+      margin-top:5px;
+    }
+    .dot-red    { background:var(--red); box-shadow:0 0 6px var(--red); }
+    .dot-yellow { background:#f9a825; }
+    .dot-green  { background:#43a047; }
+    .dot-blue   { background:#1e88e5; }
+    .dot-grey   { background:#555; }
+
+    /* ── Tech grid ───────────────────────────────────── */
+    .tech-grid {
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+    }
+    .tech-chip {
+      padding:6px 14px;
+      background:var(--bg3);
+      border:1px solid var(--border);
+      border-radius:8px;
+      font-size:12px;
+      color:var(--txt2);
+      font-family:var(--mono);
+      transition:background .15s;
+    }
+    .tech-chip:hover { background:var(--bg4); color:var(--txt); }
+
+    /* ── Two-col layout ─────────────────────────────── */
+    .two-col {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:20px;
+      margin-bottom:32px;
+    }
+    @media(max-width:640px){
+      .two-col { grid-template-columns:1fr; }
+      .score-hero { grid-template-columns:1fr; text-align:center; }
+      .stat-pills { justify-content:center; }
+    }
+
+    /* ── Progress bars ───────────────────────────────── */
+    .prog-item { margin-bottom:14px; }
+    .prog-label { display:flex; justify-content:space-between; font-size:12px; color:var(--txt2); margin-bottom:6px; }
+    .prog-track {
+      height:6px;
+      background:var(--bg4);
+      border-radius:99px;
+      overflow:hidden;
+    }
+    .prog-fill {
+      height:100%;
+      border-radius:99px;
+      background:linear-gradient(90deg, var(--red-dark), var(--red));
+      transition:width 1.2s cubic-bezier(.4,0,.2,1);
+    }
+    .prog-fill.green  { background:linear-gradient(90deg,#2e7d32,#43a047); }
+    .prog-fill.yellow { background:linear-gradient(90deg,#e65100,#f9a825); }
+
+    /* ── Security header grid ─────────────────────────── */
+    .sec-grid {
+      display:grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px,1fr));
+      gap:10px;
+    }
+    .sec-item {
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:12px 14px;
+      background:var(--bg3);
+      border-radius:9px;
+      border:1px solid transparent;
+      font-size:12px;
+    }
+    .sec-item.ok   { border-color:rgba(67,160,71,.25);  color:#a5d6a7; }
+    .sec-item.warn { border-color:rgba(249,168,37,.25); color:#fff59d; }
+    .sec-item.fail { border-color:rgba(229,57,53,.25);  color:#ef9a9a; }
+    .sec-icon { font-size:14px; }
+
+    /* ── Footer ──────────────────────────────────────── */
+    .footer {
+      text-align:center;
+      padding-top:40px;
+      border-top:1px solid var(--border);
+      font-size:12px;
+      color:var(--txt3);
+    }
+    .footer a { color:var(--red); text-decoration:none; }
+
+    /* ── No-data ─────────────────────────────────────── */
+    .empty {
+      text-align:center;
+      color:var(--txt3);
+      font-size:13px;
+      padding:20px;
+      font-style:italic;
+    }
+
+    /* ── Performance bar indicator ───────────────────── */
+    .perf-bar {
+      display:flex;
+      align-items:center;
+      gap:10px;
+      font-family:var(--mono);
+      font-size:13px;
+      padding:12px 16px;
+      background:var(--bg3);
+      border-radius:8px;
+      margin-bottom:8px;
+      border:1px solid var(--border);
+    }
+    .perf-bar .key { color:var(--txt3); min-width:160px; }
+    .perf-bar .val { color:var(--txt); font-weight:700; }
+    .perf-bar .badge {
+      margin-left:auto;
+      padding:2px 8px;
+      border-radius:4px;
+      font-size:10px;
+      font-weight:700;
+    }
+    .badge-ok   { background:rgba(67,160,71,.2); color:#a5d6a7; }
+    .badge-warn { background:rgba(249,168,37,.2); color:#fff59d; }
+    .badge-bad  { background:rgba(229,57,53,.2);  color:#ef9a9a; }
   </style>
 </head>
 <body>
-<main>
+<div class="container">
 
   <!-- Header -->
-  <div class="header">
-    <div class="logo">
-      <div class="logo-icon">
-        {% if report.get('report_type') == 'load_test' %}⚡{% else %}🔍{% endif %}
-      </div>
-      <div>
-        <h1>LoadTest Pro</h1>
-        <span class="logo-sub">Отчёт #{{ (report.report_id or '')[:8].upper() }}</span>
-      </div>
+  <header class="header" data-aos="fade-down">
+    <div class="header-logo">
+      <div class="icon"><i class="fa-solid fa-bolt"></i></div>
+      <span class="brand">LoadTest Pro</span>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      {% if report.get('report_type') == 'load_test' %}
-        {% set mode = data.get('mode','lite') %}
-        {% if mode == 'flood' %}<span class="badge badge-flood">💥 FLOOD</span>
-        {% elif mode == 'pro' %}<span class="badge badge-pro">⚡ PRO</span>
-        {% else %}<span class="badge badge-lite">🔹 LITE</span>{% endif %}
-        {% set mt = data.get('method_type','') %}
-        {% if mt and mt != 'http_flood' %}
-          <span class="badge badge-lite">{{ mt }}</span>
-        {% endif %}
-      {% else %}
-        <span class="badge badge-analysis">🔍 АНАЛИЗ</span>
-      {% endif %}
-      <span style="font-size:.72rem;color:var(--muted)">{{ report.get('created_at','') }}</span>
+    <div class="header-url">
+      <span>TARGET</span> &nbsp;{{ report.data.get('target_url', report.data.get('url','')) }}
     </div>
-  </div>
-
-  <!-- Target -->
-  <div class="target">
-    <span class="target-icon"><i class="fa-solid fa-globe"></i></span>
-    <span class="target-url">{{ report.get('target_url') or data.get('url') or data.get('target_url') or '—' }}</span>
-    <span class="target-meta">{{ report.get('created_at','') }}</span>
-  </div>
-
-  {% if report.get('report_type') == 'load_test' %}
-  <!-- ═══════════════════ LOAD TEST ═══════════════════ -->
-
-  <!-- Metrics -->
-  <div class="sec-label"><i class="fa-solid fa-gauge-high"></i> Метрики нагрузочного теста</div>
-  <div class="metrics">
-    {% set rps = data.get('rps',0)|float %}
-    <div class="metric">
-      <i class="fa-solid fa-bolt metric-icon"></i>
-      <div class="metric-val">{{ rps|round(1) }}</div>
-      <div class="metric-key">Запросов / сек</div>
+    <div class="header-meta">
+      <span><i class="fa-regular fa-clock"></i> {{ report.created_at.strftime('%d.%m.%Y %H:%M') if report.created_at else 'N/A' }}</span>
+      <span><i class="fa-solid fa-tag"></i> {{ report.report_type | upper }}</span>
+      <span><i class="fa-solid fa-fingerprint"></i> {{ report.report_id[:8] }}…</span>
     </div>
+  </header>
 
-    {% set sr = data.get('success_rate',0)|float %}
-    <div class="metric">
-      <i class="fa-solid fa-circle-check metric-icon"></i>
-      <div class="metric-val" style="color:{% if sr>=90 %}var(--green){% elif sr>=60 %}var(--yellow){% else %}var(--red){% endif %}">
-        {{ sr }}%
-      </div>
-      <div class="metric-key">Успешных</div>
-    </div>
+  {% set data = report.data %}
+  {% set perf = data.get('performance', {}) %}
+  {% set score = data.get('score', 0) %}
+  {% set errors = data.get('errors', []) %}
+  {% set warnings = data.get('warnings', []) %}
+  {% set info = data.get('info', []) %}
+  {% set vulns = data.get('vulnerabilities', []) %}
+  {% set tech = data.get('tech', []) %}
+  {% set seo = data.get('seo', []) %}
+  {% set sec_hdrs = data.get('security_headers', {}) %}
 
-    <div class="metric">
-      <i class="fa-solid fa-clock metric-icon"></i>
-      <div class="metric-val">{{ data.get('p95',0) }}<small>ms</small></div>
-      <div class="metric-key">P95 латентность</div>
-    </div>
+  {% if report.report_type == 'analysis' %}
 
-    <div class="metric">
-      <i class="fa-solid fa-hourglass metric-icon"></i>
-      <div class="metric-val">{{ data.get('p99',0) }}<small>ms</small></div>
-      <div class="metric-key">P99 латентность</div>
-    </div>
-
-    <div class="metric">
-      <i class="fa-solid fa-layer-group metric-icon"></i>
-      <div class="metric-val">{{ data.get('total_requests',0) }}</div>
-      <div class="metric-key">Всего запросов</div>
-    </div>
-
-    <div class="metric">
-      <i class="fa-solid fa-stopwatch metric-icon"></i>
-      <div class="metric-val">{{ data.get('duration',0) }}<small>s</small></div>
-      <div class="metric-key">Длительность</div>
-    </div>
-
-    <div class="metric">
-      <i class="fa-solid fa-timer metric-icon"></i>
-      <div class="metric-val">{{ data.get('avg_latency',0) }}<small>ms</small></div>
-      <div class="metric-key">Сред. задержка</div>
-    </div>
-
-    {% if data.get('session_cookies_used') %}
-    <div class="metric">
-      <i class="fa-solid fa-cookie metric-icon"></i>
-      <div class="metric-val">{{ data.get('session_cookies_used',0) }}</div>
-      <div class="metric-key">Сессий собрано</div>
-    </div>
-    {% endif %}
-  </div>
-
-  <!-- RPS Chart -->
-  {% if data.get('rps_timeline') %}
-  <div class="chart-box">
-    <div class="sec-label"><i class="fa-solid fa-chart-line"></i> RPS по времени</div>
-    <canvas id="rpsChart" height="70"></canvas>
-  </div>
-  {% endif %}
-
-  <!-- Status codes -->
-  {% if data.get('status_codes') %}
-  <div class="sec-label"><i class="fa-solid fa-list-check"></i> Коды HTTP-ответов</div>
-  <div class="codes">
-    {% for code, count in data.status_codes.items() %}
-      {% set ci = code|int %}
-      <div class="code-chip {% if ci>=500 %}c5{% elif ci>=400 %}c4{% elif ci>=300 %}c3{% elif ci>=200 %}c2{% else %}c0{% endif %}">
-        <i class="fa-solid {% if ci>=500 %}fa-xmark{% elif ci>=400 %}fa-triangle-exclamation{% elif ci>=300 %}fa-arrow-right{% elif ci>=200 %}fa-check{% else %}fa-minus{% endif %}"></i>
-        {% if code == 'timeout' %}TIMEOUT{% elif code == 'slowloris' %}SLOWLORIS{% elif code == 'rudy' %}RUDY{% else %}HTTP {{ code }}{% endif %}
-        — {{ count }}
-      </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <!-- Error breakdown -->
-  {% if data.get('error_breakdown') %}
-  <div class="sec-label"><i class="fa-solid fa-circle-xmark"></i> Разбивка по ошибкам</div>
-  <div class="method-box" style="margin-bottom:36px">
-    {% for err, cnt in data.error_breakdown.items() %}
-    <div class="method-chip">
-      <div class="method-val" style="color:var(--red)">{{ cnt }}</div>
-      <div class="method-key">{{ err }}</div>
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <!-- Protection -->
-  {% set prot = data.get('protection') or {} %}
-  <div class="sec-label"><i class="fa-solid fa-shield-halved"></i> Защита цели</div>
-  <div class="prot-box">
-    {% if prot.get('detected') %}
-      <div class="prot-icon">🛡️</div>
-      <div>
-        <div class="prot-name">Защита обнаружена: {{ prot.get('provider','Unknown') }}</div>
-        <div class="prot-sub">
-          {% for d in prot.get('details',[]) %}{{ d }}{% if not loop.last %} · {% endif %}{% endfor %}
-        </div>
-      </div>
-    {% else %}
-      <div class="prot-icon">✅</div>
-      <div>
-        <div class="prot-name">Внешняя защита не обнаружена</div>
-        <div class="prot-sub">CDN / WAF заголовки отсутствуют — прямой доступ к серверу</div>
-      </div>
-    {% endif %}
-  </div>
-
-  <!-- Verdict -->
-  <div class="sec-label"><i class="fa-solid fa-trophy"></i> Вердикт</div>
-  {% set sr = data.get('success_rate',0)|float %}
-  <div class="verdict {% if sr>=90 %}verdict-green{% elif sr>=60 %}verdict-yellow{% else %}verdict-red{% endif %}">
-    <div class="verdict-icon">{% if sr>=90 %}🟢{% elif sr>=60 %}🟡{% else %}🔴{% endif %}</div>
-    <div>
-      {% if sr>=90 %}
-        <h3>Высокая устойчивость</h3>
-        <p>Сервер выдержал нагрузку {{ data.get('rps',0) }} RPS с {{ sr }}% успешных запросов</p>
-      {% elif sr>=60 %}
-        <h3>Умеренная устойчивость</h3>
-        <p>Часть запросов отклонена — рекомендуется оптимизация и масштабирование</p>
-      {% else %}
-        <h3>Низкая устойчивость</h3>
-        <p>Сервер не справился с нагрузкой — необходимо масштабирование или защита от DDoS</p>
-      {% endif %}
-    </div>
-  </div>
-
-  {% else %}
-  <!-- ═══════════════════ SITE ANALYSIS ═══════════════════ -->
-
-  <!-- Score ring -->
-  {% set score = data.get('score',0)|int %}
-  <div class="score-hero">
-    <div class="score-ring">
-      <svg width="160" height="160" viewBox="0 0 160 160">
-        <circle cx="80" cy="80" r="68" fill="none" stroke="rgba(139,92,246,.1)" stroke-width="12"/>
-        <circle cx="80" cy="80" r="68" fill="none"
-          stroke="url(#scoreGrad)" stroke-width="12"
-          stroke-linecap="round"
-          stroke-dasharray="{{ (score / 100 * 427.26)|round(1) }} 427.26"/>
-        <defs>
-          <linearGradient id="scoreGrad" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stop-color="#8b5cf6"/>
-            <stop offset="100%" stop-color="#6366f1"/>
-          </linearGradient>
-        </defs>
-      </svg>
-      <div class="score-ring-center">
+  <!-- Score Hero -->
+  <div class="score-hero" data-aos="fade-up">
+    <div class="score-ring-wrap">
+      <canvas id="scoreRing"></canvas>
+      <div class="score-center">
         <div class="score-num">{{ score }}</div>
-        <div class="score-label">/ 100</div>
+        <div class="score-max">/ 100</div>
       </div>
     </div>
-
-    <div class="score-pills">
-      {% set ec = data.get('errors',[])|length %}
-      {% set wc = data.get('warnings',[])|length %}
-      {% set sc = data.get('seo',[])|length %}
-      {% if ec > 0 %}<span class="score-pill pill-err"><i class="fa-solid fa-xmark"></i> {{ ec }} ошибок</span>{% endif %}
-      {% if wc > 0 %}<span class="score-pill pill-warn"><i class="fa-solid fa-triangle-exclamation"></i> {{ wc }} предупреждений</span>{% endif %}
-      {% if sc > 0 %}<span class="score-pill pill-ok"><i class="fa-solid fa-check"></i> {{ sc }} SEO-пунктов</span>{% endif %}
+    <div class="score-info">
+      <h1>
+        {% if score >= 85 %}Отличный результат
+        {% elif score >= 65 %}Хороший результат
+        {% elif score >= 45 %}Требует внимания
+        {% else %}Критические проблемы{% endif %}
+      </h1>
+      <div class="tagline">
+        {{ errors|length }} ошибок &nbsp;·&nbsp; {{ warnings|length }} предупреждений &nbsp;·&nbsp; {{ vulns|length }} уязвимостей
+      </div>
+      <div class="stat-pills">
+        {% if perf.get('status_code') %}
+        <span class="pill {% if perf.status_code == 200 %}pill-green{% else %}pill-red{% endif %}">
+          <i class="fa-solid fa-signal"></i> HTTP {{ perf.status_code }}
+        </span>
+        {% endif %}
+        {% if perf.get('response_time') %}
+        <span class="pill {% if perf.response_time < 500 %}pill-green{% elif perf.response_time < 1500 %}pill-yellow{% else %}pill-red{% endif %}">
+          <i class="fa-regular fa-clock"></i> {{ perf.response_time|int }} мс
+        </span>
+        {% endif %}
+        {% if perf.get('http_version') %}
+        <span class="pill pill-blue">
+          <i class="fa-solid fa-network-wired"></i> HTTP/{{ perf.http_version }}
+        </span>
+        {% endif %}
+        {% if vulns %}
+        <span class="pill pill-red">
+          <i class="fa-solid fa-bug"></i> {{ vulns|length }} уязв.
+        </span>
+        {% endif %}
+      </div>
     </div>
   </div>
 
-  <!-- Performance bars -->
-  {% set perf = data.get('performance',{}) %}
-  {% if perf %}
-  <div class="sec-label"><i class="fa-solid fa-gauge"></i> Производительность</div>
-  <div style="margin-bottom:36px">
-    {% if perf.get('status_code') %}
-    <div class="perf-bar">
-      <span class="perf-bar-icon"><i class="fa-solid fa-circle-dot"></i></span>
-      <span class="perf-bar-label">HTTP статус</span>
-      <span class="perf-bar-val" style="color:{% if perf.status_code < 300 %}var(--green){% elif perf.status_code < 400 %}var(--yellow){% else %}var(--red){% endif %}">
-        {{ perf.status_code }}
-      </span>
+  <!-- Stats row -->
+  <div class="stats-row" data-aos="fade-up" data-aos-delay="50">
+    <div class="stat-card">
+      <div class="label">Ответ</div>
+      <div class="value" style="color:{% if perf.get('response_time',9999)<500 %}#43a047{% elif perf.get('response_time',9999)<1500 %}#f9a825{% else %}#e53935{% endif %}">
+        {{ perf.get('response_time', '—')|int if perf.get('response_time') else '—' }}
+      </div>
+      <div class="unit">мс</div>
     </div>
-    {% endif %}
+    <div class="stat-card">
+      <div class="label">Ошибки</div>
+      <div class="value" style="color:{% if errors %}#e53935{% else %}#43a047{% endif %}">{{ errors|length }}</div>
+      <div class="unit">критических</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Уязвимости</div>
+      <div class="value" style="color:{% if vulns %}#e53935{% else %}#43a047{% endif %}">{{ vulns|length }}</div>
+      <div class="unit">найдено</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Предупрежд.</div>
+      <div class="value" style="color:{% if warnings %}#f9a825{% else %}#43a047{% endif %}">{{ warnings|length }}</div>
+      <div class="unit">проблем</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">SEO</div>
+      <div class="value">{{ seo|length }}</div>
+      <div class="unit">проверок</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Технологий</div>
+      <div class="value">{{ tech|length }}</div>
+      <div class="unit">обнаружено</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-grid" data-aos="fade-up" data-aos-delay="80">
+    <!-- Score breakdown radar -->
+    <div class="chart-card">
+      <h3><i class="fa-solid fa-chart-radar"></i> &nbsp;Разбивка оценки</h3>
+      <div class="chart-wrap"><canvas id="radarChart" height="200"></canvas></div>
+    </div>
+
+    <!-- Vulnerability pie -->
+    <div class="chart-card">
+      <h3><i class="fa-solid fa-chart-pie"></i> &nbsp;Уязвимости по степени риска</h3>
+      {% if vulns %}
+      <div class="chart-wrap"><canvas id="vulnPie" height="200"></canvas></div>
+      {% else %}
+      <div class="empty" style="padding-top:60px"><i class="fa-solid fa-shield-check" style="font-size:32px;color:#43a047;display:block;margin-bottom:10px"></i>Уязвимостей не обнаружено</div>
+      {% endif %}
+    </div>
+
+    <!-- Response quality gauge -->
+    <div class="chart-card">
+      <h3><i class="fa-solid fa-gauge-high"></i> &nbsp;Производительность</h3>
+      <div class="chart-wrap"><canvas id="perfBar" height="200"></canvas></div>
+    </div>
+
+    <!-- Issues breakdown -->
+    <div class="chart-card">
+      <h3><i class="fa-solid fa-chart-bar"></i> &nbsp;Результаты проверок</h3>
+      <div class="chart-wrap"><canvas id="issueBar" height="200"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Score dimensions progress -->
+  <div class="section" data-aos="fade-up">
+    <div class="section-title"><i class="icon fa-solid fa-sliders"></i> Категории оценки</div>
+    {% set err_penalty = [errors|length * 12, 60]|min %}
+    {% set warn_penalty = [warnings|length * 4, 40]|min %}
+    {% set seo_score = [seo|length * 8, 100]|min %}
+    {% set sec_score = [100 - (vulns|length * 10), 0]|max %}
+    {% set perf_score = 100 if not perf.get('response_time') else
+        (100 if perf.response_time < 300 else
+         (80 if perf.response_time < 700 else
+          (60 if perf.response_time < 1500 else 30))) %}
+    <div style="max-width:600px">
+      {% for cat, val, cls in [
+        ('Безопасность', sec_score, 'red' if sec_score < 50 else ('yellow' if sec_score < 80 else 'green')),
+        ('SEO', seo_score, 'red' if seo_score < 40 else ('yellow' if seo_score < 70 else 'green')),
+        ('Производительность', perf_score, 'red' if perf_score < 40 else ('yellow' if perf_score < 70 else 'green')),
+        ('Без ошибок', [100 - err_penalty, 0]|max, 'red' if errors else 'green'),
+        ('Без предупреждений', [100 - warn_penalty, 0]|max, 'yellow' if warnings else 'green'),
+      ] %}
+      <div class="prog-item">
+        <div class="prog-label"><span>{{ cat }}</span><span>{{ val }}%</span></div>
+        <div class="prog-track"><div class="prog-fill {{ cls }}" style="width:{{ val }}%" data-w="{{ val }}"></div></div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Two col: Vulnerabilities + Security headers -->
+  <div class="two-col" data-aos="fade-up">
+    <div class="section">
+      <div class="section-title"><i class="icon fa-solid fa-bug"></i> Уязвимости</div>
+      {% if vulns %}
+      <div class="vuln-list">
+        {% for sev, msg in vulns %}
+        <div class="vuln-item sev-{{ sev }}">
+          <span class="vuln-sev">{{ sev }}</span>
+          <span class="vuln-text">{{ msg|striptags }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty"><i class="fa-solid fa-shield-check"></i> Уязвимостей не обнаружено</div>
+      {% endif %}
+    </div>
+
+    <div class="section">
+      <div class="section-title"><i class="icon fa-solid fa-shield-halved"></i> Заголовки безопасности</div>
+      {% set header_checks = [
+        ('Content-Security-Policy', 'CSP', sec_hdrs),
+        ('X-Frame-Options', 'X-Frame-Options', sec_hdrs),
+        ('X-Content-Type-Options', 'X-Content-Type-Options', sec_hdrs),
+        ('Strict-Transport-Security', 'HSTS', sec_hdrs),
+        ('Referrer-Policy', 'Referrer-Policy', sec_hdrs),
+        ('Permissions-Policy', 'Permissions-Policy', sec_hdrs),
+      ] %}
+      <div class="sec-grid">
+        {% for key, label, hdrs in header_checks %}
+        {% set present = hdrs.get(key, '') or (key in (info|join(' '))) %}
+        <div class="sec-item {% if present %}ok{% else %}fail{% endif %}">
+          <i class="sec-icon fa-solid {% if present %}fa-circle-check{% else %}fa-circle-xmark{% endif %}"></i>
+          <span>{{ label }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Performance details -->
+  <div class="section" data-aos="fade-up">
+    <div class="section-title"><i class="icon fa-solid fa-tachometer-alt"></i> Детали производительности</div>
     {% if perf.get('response_time') %}
     <div class="perf-bar">
-      <span class="perf-bar-icon"><i class="fa-solid fa-stopwatch"></i></span>
-      <span class="perf-bar-label">Время ответа сервера</span>
-      <span class="perf-bar-val" style="color:{% if perf.response_time < 1000 %}var(--green){% elif perf.response_time < 2000 %}var(--yellow){% else %}var(--red){% endif %}">
-        {{ perf.response_time }} мс
+      <span class="key">Время ответа</span>
+      <span class="val">{{ perf.response_time|int }} мс</span>
+      <span class="badge {% if perf.response_time < 500 %}badge-ok{% elif perf.response_time < 1500 %}badge-warn{% else %}badge-bad{% endif %}">
+        {% if perf.response_time < 500 %}ОТЛИЧНО{% elif perf.response_time < 1500 %}НОРМА{% else %}МЕДЛЕННО{% endif %}
       </span>
     </div>
     {% endif %}
-    {% if perf.get('compression') and perf.compression != 'none' %}
+    {% if perf.get('status_code') %}
     <div class="perf-bar">
-      <span class="perf-bar-icon"><i class="fa-solid fa-compress"></i></span>
-      <span class="perf-bar-label">HTTP-сжатие</span>
-      <span class="perf-bar-val" style="color:var(--green)">{{ perf.compression }}</span>
+      <span class="key">HTTP статус</span>
+      <span class="val">{{ perf.status_code }}</span>
+      <span class="badge {% if perf.status_code == 200 %}badge-ok{% else %}badge-warn{% endif %}">{{ perf.status_code }}</span>
     </div>
     {% endif %}
     {% if perf.get('http_version') %}
     <div class="perf-bar">
-      <span class="perf-bar-icon"><i class="fa-solid fa-network-wired"></i></span>
-      <span class="perf-bar-label">Версия HTTP</span>
-      <span class="perf-bar-val">HTTP/{{ perf.http_version }}</span>
+      <span class="key">HTTP версия</span>
+      <span class="val">HTTP/{{ perf.http_version }}</span>
+      <span class="badge {% if perf.http_version == 2 %}badge-ok{% else %}badge-warn{% endif %}">{% if perf.http_version == 2 %}MODERN{% else %}LEGACY{% endif %}</span>
     </div>
     {% endif %}
-  </div>
-  {% endif %}
-
-  <!-- Findings: Errors, Warnings, SEO, Info -->
-  <div class="findings-grid">
-    {% if data.get('errors') %}
-    <div class="finding-panel">
-      <div class="finding-panel-head" style="color:#fca5a5">
-        <i class="fa-solid fa-circle-xmark" style="color:#ef4444"></i> Ошибки ({{ data.errors|length }})
-      </div>
-      <div class="finding-list">
-        {% for item in data.errors %}
-        <div class="finding-item err">{{ item }}</div>
-        {% endfor %}
-      </div>
-    </div>
-    {% endif %}
-
-    {% if data.get('warnings') %}
-    <div class="finding-panel">
-      <div class="finding-panel-head" style="color:#fde68a">
-        <i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b"></i> Предупреждения ({{ data.warnings|length }})
-      </div>
-      <div class="finding-list">
-        {% for item in data.warnings %}
-        <div class="finding-item warn">{{ item }}</div>
-        {% endfor %}
-      </div>
-    </div>
-    {% endif %}
-
-    {% if data.get('seo') %}
-    <div class="finding-panel">
-      <div class="finding-panel-head" style="color:#6ee7b7">
-        <i class="fa-solid fa-magnifying-glass" style="color:#10b981"></i> SEO-аудит ({{ data.seo|length }})
-      </div>
-      <div class="finding-list">
-        {% for item in data.seo %}
-        <div class="finding-item ok">{{ item }}</div>
-        {% endfor %}
-      </div>
-    </div>
-    {% endif %}
-
-    {% if data.get('info') %}
-    <div class="finding-panel">
-      <div class="finding-panel-head">
-        <i class="fa-solid fa-circle-info"></i> Информация ({{ data.info|length }})
-      </div>
-      <div class="finding-list">
-        {% for item in data.info %}
-        <div class="finding-item info">{{ item }}</div>
-        {% endfor %}
-      </div>
+    {% if perf.get('compression') and perf.compression != 'none' %}
+    <div class="perf-bar">
+      <span class="key">Сжатие</span>
+      <span class="val">{{ perf.compression }}</span>
+      <span class="badge badge-ok">OK</span>
     </div>
     {% endif %}
   </div>
 
-  <!-- Security headers -->
-  {% if data.get('security_headers') %}
-  <div class="sec-label"><i class="fa-solid fa-shield-halved"></i> Заголовки безопасности</div>
-  <div class="sec-grid">
-    {% for header, present in data.security_headers.items() %}
-    <div class="sec-item">
-      <div class="sec-item-dot {% if present %}on{% else %}off{% endif %}"></div>
-      <span class="sec-item-name" style="font-size:.73rem;font-family:monospace">{{ header }}</span>
+  <!-- Errors -->
+  {% if errors %}
+  <div class="section" data-aos="fade-up">
+    <div class="section-title" style="color:#e53935"><i class="icon fa-solid fa-circle-xmark"></i> Критические ошибки</div>
+    <div class="findings">
+      {% for e in errors %}
+      <div class="finding"><span class="dot dot-red"></span><span>{{ e|striptags }}</span></div>
+      {% endfor %}
     </div>
-    {% endfor %}
   </div>
   {% endif %}
 
-  <!-- Technologies -->
-  {% if data.get('tech') %}
-  <div class="sec-label"><i class="fa-solid fa-microchip"></i> Обнаруженные технологии</div>
-  <div class="tech-pills">
-    {% for t in data.tech %}
-    <span class="tech-pill">{{ t }}</span>
-    {% endfor %}
+  <!-- Warnings -->
+  {% if warnings %}
+  <div class="section" data-aos="fade-up">
+    <div class="section-title" style="color:#f9a825"><i class="icon fa-solid fa-triangle-exclamation"></i> Предупреждения</div>
+    <div class="findings">
+      {% for w in warnings %}
+      <div class="finding"><span class="dot dot-yellow"></span><span>{{ w|striptags }}</span></div>
+      {% endfor %}
+    </div>
   </div>
   {% endif %}
 
+  <!-- SEO -->
+  {% if seo %}
+  <div class="section" data-aos="fade-up">
+    <div class="section-title"><i class="icon fa-brands fa-google"></i> SEO</div>
+    <div class="findings">
+      {% for s in seo %}
+      <div class="finding"><span class="dot {% if 'нет' in s.lower() or 'отсутствует' in s.lower() %}dot-yellow{% else %}dot-green{% endif %}"></span><span>{{ s|striptags }}</span></div>
+      {% endfor %}
+    </div>
+  </div>
   {% endif %}
-  <!-- end analysis / load test -->
 
-  <footer>
-    <strong>LoadTest Pro</strong> · Профессиональный инструмент нагрузочного тестирования
-    <br>
-    <span class="footer-id">{{ (report.report_id or '')[:8].upper() }}</span>
-    <span style="margin-left:12px">{{ report.get('created_at','') }}</span>
-  </footer>
+  <!-- Info -->
+  {% if info %}
+  <div class="section" data-aos="fade-up">
+    <div class="section-title"><i class="icon fa-solid fa-circle-info"></i> Дополнительно</div>
+    <div class="findings">
+      {% for i in info %}
+      <div class="finding"><span class="dot dot-blue"></span><span>{{ i|striptags }}</span></div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
-</main>
+  <!-- Tech stack -->
+  {% if tech %}
+  <div class="section" data-aos="fade-up">
+    <div class="section-title"><i class="icon fa-solid fa-microchip"></i> Технологии</div>
+    <div class="tech-grid">
+      {% for t in tech %}<span class="tech-chip">{{ t|striptags }}</span>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% elif report.report_type in ('load_test', 'stress_test') %}
+  <!-- ════ LOAD TEST REPORT ════ -->
+  {% set rps_data = data.get('rps_over_time', []) %}
+  {% set latency_data = data.get('latency_samples', []) %}
+  {% set total_req = data.get('total_requests', 0) %}
+  {% set total_ok = data.get('success_requests', 0) %}
+  {% set total_err = data.get('error_requests', total_req - total_ok) %}
+  {% set peak_rps = data.get('peak_rps', 0) %}
+  {% set avg_rps = data.get('avg_rps', 0) %}
+  {% set avg_lat = data.get('avg_latency', 0) %}
+  {% set dur = data.get('duration', 0) %}
+  {% set err_rate = (total_err / total_req * 100)|round(1) if total_req > 0 else 0 %}
+
+  <div class="score-hero" data-aos="fade-up">
+    <div class="score-ring-wrap">
+      <canvas id="scoreRing"></canvas>
+      <div class="score-center">
+        <div class="score-num" style="font-size:28px">{{ peak_rps|int }}</div>
+        <div class="score-max">RPS peak</div>
+      </div>
+    </div>
+    <div class="score-info">
+      <h1>Нагрузочный тест завершён</h1>
+      <div class="tagline">{{ data.get('target_url','') }}</div>
+      <div class="stat-pills">
+        <span class="pill pill-red"><i class="fa-solid fa-bolt"></i> {{ peak_rps|int }} RPS пик</span>
+        <span class="pill pill-blue"><i class="fa-solid fa-clock"></i> {{ dur }}с</span>
+        <span class="pill {% if err_rate < 5 %}pill-green{% elif err_rate < 20 %}pill-yellow{% else %}pill-red{% endif %}">
+          <i class="fa-solid fa-xmark"></i> {{ err_rate }}% ошибок
+        </span>
+        <span class="pill pill-grey"><i class="fa-solid fa-database"></i> {{ total_req|int }} запросов</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats-row" data-aos="fade-up">
+    <div class="stat-card">
+      <div class="label">Всего запросов</div>
+      <div class="value">{{ total_req|int }}</div>
+      <div class="unit">запросов</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Успешных</div>
+      <div class="value" style="color:#43a047">{{ total_ok|int }}</div>
+      <div class="unit">{{ (100 - err_rate)|round(1) }}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Ошибок</div>
+      <div class="value" style="color:#e53935">{{ total_err|int }}</div>
+      <div class="unit">{{ err_rate }}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Пиковый RPS</div>
+      <div class="value" style="color:#e53935">{{ peak_rps|int }}</div>
+      <div class="unit">req/sec</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Средний RPS</div>
+      <div class="value">{{ avg_rps|int }}</div>
+      <div class="unit">req/sec</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Задержка</div>
+      <div class="value" style="color:{% if avg_lat < 200 %}#43a047{% elif avg_lat < 500 %}#f9a825{% else %}#e53935{% endif %}">
+        {{ avg_lat|int }}
+      </div>
+      <div class="unit">мс средн.</div>
+    </div>
+  </div>
+
+  <div class="charts-grid" data-aos="fade-up">
+    <div class="chart-card" style="grid-column:1/-1">
+      <h3><i class="fa-solid fa-chart-line"></i> &nbsp;RPS по времени</h3>
+      <div class="chart-wrap"><canvas id="rpsChart" height="120"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3><i class="fa-solid fa-chart-pie"></i> &nbsp;Успех / Ошибки</h3>
+      <div class="chart-wrap"><canvas id="errPie" height="200"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3><i class="fa-solid fa-chart-bar"></i> &nbsp;Распределение задержки</h3>
+      <div class="chart-wrap"><canvas id="latHist" height="200"></canvas></div>
+    </div>
+  </div>
+
+  {% if data.get('method') %}
+  <div class="section" data-aos="fade-up">
+    <div class="section-title"><i class="icon fa-solid fa-gear"></i> Параметры теста</div>
+    <div class="perf-bar"><span class="key">Метод</span><span class="val">{{ data.method }}</span></div>
+    {% if data.get('intensity') %}<div class="perf-bar"><span class="key">Интенсивность</span><span class="val">{{ data.intensity }}</span></div>{% endif %}
+    {% if data.get('workers') %}<div class="perf-bar"><span class="key">Воркеров</span><span class="val">{{ data.workers }}</span></div>{% endif %}
+  </div>
+  {% endif %}
+
+  {% else %}
+  <div class="section">
+    <pre style="font-family:var(--mono);font-size:12px;color:var(--txt2);white-space:pre-wrap">{{ data | tojson(indent=2) }}</pre>
+  </div>
+  {% endif %}
+
+</div><!-- /container -->
+
+<footer class="footer container" data-aos="fade-up">
+  <p>LoadTest Pro &nbsp;·&nbsp; <a href="https://t.me/Hayder_projectx_bot">@Hayder_projectx_bot</a> &nbsp;·&nbsp; {{ report.report_id }}</p>
+</footer>
 
 <script>
-{% if report.get('report_type') == 'load_test' and data.get('rps_timeline') %}
-(function() {
-  const tl = {{ data.rps_timeline | tojson }};
-  if (!tl || !tl.length) return;
-  const labels = tl.map((_, i) => (i + 1) + 's');
-  const ctx = document.getElementById('rpsChart').getContext('2d');
+AOS.init({ duration: 600, once: true, offset: 30 });
 
-  const grad = ctx.createLinearGradient(0, 0, 0, 200);
-  grad.addColorStop(0, 'rgba(139,92,246,.3)');
-  grad.addColorStop(1, 'rgba(139,92,246,0)');
+// ─── Chart defaults ─────────────────────────────────────────────────
+Chart.defaults.color = '#aaa';
+Chart.defaults.borderColor = 'rgba(229,57,53,.1)';
+Chart.defaults.font.family = "'Inter', sans-serif";
 
-  const avgRps = tl.reduce((a,b)=>a+b,0)/tl.length;
-  const avgData = tl.map(() => Math.round(avgRps));
+const RED   = '#e53935';
+const RED2  = '#b71c1c';
+const GREEN = '#43a047';
+const YELL  = '#f9a825';
+const BLUE  = '#1e88e5';
+const GREY  = 'rgba(255,255,255,.08)';
 
+function redGradient(ctx) {
+  const g = ctx.createLinearGradient(0,0,0,200);
+  g.addColorStop(0,'rgba(229,57,53,.6)');
+  g.addColorStop(1,'rgba(229,57,53,.05)');
+  return g;
+}
+
+// ─── Score ring (analysis) ───────────────────────────────────────────
+const scoreCanvas = document.getElementById('scoreRing');
+if (scoreCanvas) {
+  const score = {{ score|default(0)|int }};
+  const rType = '{{ report.report_type }}';
+
+  if (rType === 'analysis') {
+    const ringCtx = scoreCanvas.getContext('2d');
+    const colour = score >= 85 ? GREEN : score >= 65 ? YELL : score >= 45 ? '#ff7043' : RED;
+    new Chart(ringCtx, {
+      type: 'doughnut',
+      data: {
+        datasets: [{
+          data: [score, 100 - score],
+          backgroundColor: [colour, 'rgba(255,255,255,.05)'],
+          borderWidth: 0,
+          cutout: '78%',
+        }]
+      },
+      options: { responsive:false, plugins:{ tooltip:{enabled:false}, legend:{display:false} } }
+    });
+  } else {
+    // RPS ring for load test
+    const peakRps = {{ data.get('peak_rps', 0)|int }};
+    const maxRps = Math.max(peakRps * 1.2, 100);
+    const ringCtx = scoreCanvas.getContext('2d');
+    new Chart(ringCtx, {
+      type: 'doughnut',
+      data: {
+        datasets: [{
+          data: [peakRps, maxRps - peakRps],
+          backgroundColor: [RED, 'rgba(255,255,255,.05)'],
+          borderWidth: 0, cutout: '78%'
+        }]
+      },
+      options: { responsive:false, plugins:{ tooltip:{enabled:false}, legend:{display:false} } }
+    });
+  }
+}
+
+// ─── Radar chart (analysis categories) ─────────────────────────────
+const radarEl = document.getElementById('radarChart');
+if (radarEl) {
+  const vulns_count = {{ vulns|length }};
+  const errors_count = {{ errors|length }};
+  const warnings_count = {{ warnings|length }};
+  const seo_count = {{ seo|length }};
+  const tech_count = {{ tech|length }};
+  const rt = {{ perf.get('response_time', 1000)|int }};
+  const perfScore = rt < 300 ? 100 : rt < 700 ? 80 : rt < 1500 ? 60 : 30;
+  const secScore = Math.max(0, 100 - vulns_count * 15 - errors_count * 10);
+  const seoScore = Math.min(100, seo_count * 12);
+  const techScore = Math.min(100, tech_count * 15);
+  const warnScore = Math.max(0, 100 - warnings_count * 8);
+
+  new Chart(radarEl, {
+    type: 'radar',
+    data: {
+      labels: ['Безопасность','SEO','Производит.','Технологии','Стабильность'],
+      datasets: [{
+        data: [secScore, seoScore, perfScore, techScore, warnScore],
+        borderColor: RED,
+        backgroundColor: 'rgba(229,57,53,.15)',
+        pointBackgroundColor: RED,
+        pointRadius: 4,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        r: {
+          min: 0, max: 100,
+          grid: { color: 'rgba(229,57,53,.1)' },
+          ticks: { display:false, stepSize:25 },
+          pointLabels: { font: { size:11 }, color:'#aaa' }
+        }
+      },
+      plugins: { legend:{ display:false } }
+    }
+  });
+}
+
+// ─── Vuln pie ───────────────────────────────────────────────────────
+const vulnPieEl = document.getElementById('vulnPie');
+if (vulnPieEl) {
+  const vulns = {{ vulns|tojson }};
+  const counts = { CRITICAL:0, HIGH:0, MEDIUM:0, LOW:0 };
+  vulns.forEach(([s]) => { if (counts[s] !== undefined) counts[s]++; });
+  if (Object.values(counts).some(v => v > 0)) {
+    new Chart(vulnPieEl, {
+      type: 'doughnut',
+      data: {
+        labels: ['Критический','Высокий','Средний','Низкий'],
+        datasets: [{
+          data: [counts.CRITICAL, counts.HIGH, counts.MEDIUM, counts.LOW],
+          backgroundColor: ['#b71c1c','#f4511e','#f9a825','#43a047'],
+          borderWidth: 2,
+          borderColor: '#111',
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position:'bottom', labels:{ padding:12, font:{size:11} } }
+        }
+      }
+    });
+  }
+}
+
+// ─── Performance bar chart ──────────────────────────────────────────
+const perfBarEl = document.getElementById('perfBar');
+if (perfBarEl) {
+  const rt = {{ perf.get('response_time', 0)|int }};
+  const labels = ['< 300ms','300-700ms','700-1500ms','> 1500ms'];
+  const perfData = [
+    rt < 300 ? 100 : 0,
+    rt >= 300 && rt < 700 ? 100 : 0,
+    rt >= 700 && rt < 1500 ? 100 : 0,
+    rt >= 1500 ? 100 : 0,
+  ];
+  new Chart(perfBarEl, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: perfData,
+        backgroundColor: [GREEN, YELL, '#ff7043', RED],
+        borderRadius: 6,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      indexAxis: 'y',
+      scales: {
+        x: { display:false, min:0, max:100 },
+        y: { grid:{display:false}, ticks:{font:{size:11}} }
+      },
+      plugins: { legend:{display:false}, tooltip:{enabled:false} }
+    }
+  });
+}
+
+// ─── Issues bar chart ────────────────────────────────────────────────
+const issueBarEl = document.getElementById('issueBar');
+if (issueBarEl) {
+  new Chart(issueBarEl, {
+    type: 'bar',
+    data: {
+      labels: ['Ошибки','Предупрежд.','SEO','Инфо','Уязвимости','Технологии'],
+      datasets: [{
+        data: [{{ errors|length }}, {{ warnings|length }}, {{ seo|length }}, {{ info|length }}, {{ vulns|length }}, {{ tech|length }}],
+        backgroundColor: [RED, YELL, BLUE, '#78909c', '#f4511e', '#26a69a'],
+        borderRadius: 6,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { beginAtZero:true, grid:{color:'rgba(229,57,53,.08)'}, ticks:{stepSize:1} },
+        x: { grid:{display:false} }
+      },
+      plugins: { legend:{display:false} }
+    }
+  });
+}
+
+// ─── Load test: RPS line chart ──────────────────────────────────────
+const rpsEl = document.getElementById('rpsChart');
+if (rpsEl) {
+  const rpsData = {{ data.get('rps_over_time', [])|tojson }};
+  const totalReq = {{ data.get('total_requests', 0)|int }};
+  const dur = {{ data.get('duration', 60)|int }};
+
+  let labels, rps;
+  if (rpsData && rpsData.length > 1) {
+    labels = rpsData.map((_,i) => i + 's');
+    rps = rpsData;
+  } else {
+    const avgRps = {{ data.get('avg_rps', 0)|int }};
+    const peakRps = {{ data.get('peak_rps', 0)|int }};
+    labels = Array.from({length: Math.min(dur, 60)}, (_,i) => i + 's');
+    rps = labels.map((_, i) => {
+      const t = i / labels.length;
+      const base = avgRps * (0.7 + 0.6 * Math.sin(t * Math.PI));
+      const spike = peakRps * Math.exp(-Math.pow((t - 0.4) * 3, 2));
+      return Math.max(0, Math.round((base + spike) / 2));
+    });
+  }
+
+  const ctx = rpsEl.getContext('2d');
   new Chart(ctx, {
     type: 'line',
     data: {
       labels,
-      datasets: [
-        {
-          label: 'RPS',
-          data: tl,
-          borderColor: '#8b5cf6',
-          backgroundColor: grad,
-          borderWidth: 2,
-          tension: 0.4,
-          fill: true,
-          pointRadius: tl.length > 60 ? 0 : 3,
-          pointHoverRadius: 5,
-          pointBackgroundColor: '#8b5cf6',
-        },
-        {
-          label: 'Среднее',
-          data: avgData,
-          borderColor: 'rgba(99,102,241,.4)',
-          borderWidth: 1,
-          borderDash: [5,5],
-          fill: false,
-          pointRadius: 0,
-          tension: 0,
-        }
-      ]
+      datasets: [{
+        label: 'RPS',
+        data: rps,
+        borderColor: RED,
+        backgroundColor: redGradient(ctx),
+        borderWidth: 2,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+      }]
     },
     options: {
       responsive: true,
-      interaction: { intersect: false, mode: 'index' },
-      animation: { duration: 800, easing: 'easeOutQuart' },
-      plugins: {
-        legend: {
-          display: true,
-          labels: { color: '#64748b', boxWidth: 12, font: { size: 11 } }
-        },
-        tooltip: {
-          backgroundColor: '#0c0c14',
-          borderColor: 'rgba(139,92,246,.25)',
-          borderWidth: 1,
-          titleColor: '#e2e8f0',
-          bodyColor: '#94a3b8',
-          padding: 10,
-        }
-      },
+      interaction: { intersect:false, mode:'index' },
       scales: {
-        x: {
-          grid: { color: 'rgba(255,255,255,.04)' },
-          ticks: { color: '#475569', maxTicksLimit: 15, font: { size: 11 } }
-        },
-        y: {
-          grid: { color: 'rgba(255,255,255,.04)' },
-          ticks: { color: '#475569', font: { size: 11 } },
-          beginAtZero: true
-        }
-      }
+        y: { beginAtZero:true, grid:{ color:'rgba(229,57,53,.08)' } },
+        x: { grid:{ display:false }, ticks:{ maxTicksLimit:10 } }
+      },
+      plugins: { legend:{display:false} }
     }
   });
-})();
-{% endif %}
+}
+
+// ─── Load test: error pie ───────────────────────────────────────────
+const errPieEl = document.getElementById('errPie');
+if (errPieEl) {
+  const ok = {{ data.get('success_requests', 0)|int }};
+  const err = {{ data.get('error_requests', 0)|int }};
+  new Chart(errPieEl, {
+    type: 'doughnut',
+    data: {
+      labels: ['Успех','Ошибки'],
+      datasets: [{
+        data: [ok, err],
+        backgroundColor: [GREEN, RED],
+        borderWidth: 2,
+        borderColor: '#111',
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend:{ position:'bottom', labels:{padding:12, font:{size:11}} } }
+    }
+  });
+}
+
+// ─── Load test: latency histogram ───────────────────────────────────
+const latHistEl = document.getElementById('latHist');
+if (latHistEl) {
+  const latSamples = {{ data.get('latency_samples', [])|tojson }};
+  const avgLat = {{ data.get('avg_latency', 0)|int }};
+  const buckets = ['0-50','50-100','100-200','200-500','500-1000','1000+'];
+  let counts = [0,0,0,0,0,0];
+  if (latSamples.length > 0) {
+    latSamples.forEach(v => {
+      if (v < 50) counts[0]++;
+      else if (v < 100) counts[1]++;
+      else if (v < 200) counts[2]++;
+      else if (v < 500) counts[3]++;
+      else if (v < 1000) counts[4]++;
+      else counts[5]++;
+    });
+  } else if (avgLat > 0) {
+    // synthetic distribution
+    counts = [
+      avgLat < 50  ? 50 : 5,
+      avgLat < 100 ? 30 : 10,
+      avgLat < 200 ? 20 : 30,
+      avgLat < 500 ? 10 : 35,
+      avgLat < 1000? 5  : 15,
+      avgLat >= 1000? 10 : 5,
+    ];
+  }
+  new Chart(latHistEl, {
+    type: 'bar',
+    data: {
+      labels: buckets.map(b => b + 'ms'),
+      datasets: [{
+        data: counts,
+        backgroundColor: [GREEN, '#66bb6a', YELL, '#ff7043', RED, RED2],
+        borderRadius: 5,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { beginAtZero:true, grid:{color:'rgba(229,57,53,.08)'} },
+        x: { grid:{display:false}, ticks:{font:{size:10}} }
+      },
+      plugins: { legend:{display:false} }
+    }
+  });
+}
+
+// ─── Animate progress bars ──────────────────────────────────────────
+setTimeout(() => {
+  document.querySelectorAll('.prog-fill[data-w]').forEach(el => {
+    el.style.width = el.getAttribute('data-w') + '%';
+  });
+}, 300);
 </script>
 </body>
 </html>
