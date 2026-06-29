@@ -1,10 +1,19 @@
 import aiohttp
 import asyncio
 import re
+import ssl
+import socket
 from html import escape
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 import time
+
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 async def analyze_site(url: str) -> dict:
@@ -16,258 +25,364 @@ async def analyze_site(url: str) -> dict:
         "seo": [],
         "performance": {},
         "tech": [],
+        "security_headers": {},
         "success": False,
+        "score": 0,
     }
 
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
     }
 
     try:
         start = time.monotonic()
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=20),
+                allow_redirects=True,
+            ) as resp:
                 elapsed = time.monotonic() - start
-                result["performance"]["response_time"] = round(elapsed, 2)
+                result["performance"]["response_time"] = round(elapsed * 1000, 0)
                 result["performance"]["status_code"] = resp.status
                 result["performance"]["final_url"] = str(resp.url)
+                result["performance"]["http_version"] = resp.version.major if resp.version else 1
+
+                encoding_hdr = resp.headers.get("Content-Encoding", "")
+                result["performance"]["compression"] = encoding_hdr if encoding_hdr else "none"
 
                 if resp.status >= 400:
                     result["errors"].append(f"🚫 HTTP ошибка: статус {resp.status}")
                     return result
 
-                if str(resp.url) != url and not url.rstrip("/").endswith(urlparse(str(resp.url)).path.rstrip("/")):
-                    result["info"].append(f"↪️ Редирект → {escape(str(resp.url))}")
+                final_url = str(resp.url)
+                if final_url.rstrip("/") != url.rstrip("/"):
+                    result["info"].append(f"↪️ Редирект: <code>{escape(final_url[:80])}</code>")
 
                 content_type = resp.headers.get("Content-Type", "")
-                if "text/html" not in content_type:
-                    result["warnings"].append(f"⚠️ Тип контента: {escape(content_type)} (не HTML)")
-
                 html = await resp.text(errors="replace")
                 soup = BeautifulSoup(html, "lxml")
 
-                _check_https(url, result)
+                _check_https(url, resp.headers, result)
                 _check_seo(soup, url, result)
-                _check_performance(soup, html, elapsed, result)
+                _check_performance(soup, html, elapsed * 1000, resp.headers, result)
                 _check_security(resp.headers, result)
                 _check_accessibility(soup, result)
                 _check_links(soup, url, result)
                 _check_tech(soup, resp.headers, html, result)
                 _check_structured_data(soup, result)
                 _check_analytics(html, result)
-                await _check_extras(session, url, result)
+                _check_content_quality(soup, html, result)
+                _check_mobile(soup, result)
+                _check_social(soup, result)
+                await _check_extras(session, url, resp.headers, result)
+
+            score = _calc_score(result)
+            result["score"] = score
 
         result["success"] = True
-    except aiohttp.ClientConnectorError:
-        result["errors"].append("🚫 Не удалось подключиться к сайту. Проверь URL.")
+    except aiohttp.ClientConnectorError as e:
+        result["errors"].append(f"🚫 Не удалось подключиться: {escape(str(e)[:100])}")
     except asyncio.TimeoutError:
-        result["errors"].append("⏱ Сайт не ответил за 15 секунд (слишком медленный).")
+        result["errors"].append("⏱ Сайт не ответил за 20 секунд (слишком медленный)")
     except Exception as e:
-        result["errors"].append(f"❌ Ошибка при анализе: {type(e).__name__}: {escape(str(e))}")
+        result["errors"].append(f"❌ Ошибка анализа: {type(e).__name__}: {escape(str(e)[:100])}")
+
+    if not result.get("score"):
+        result["score"] = _calc_score(result)
 
     return result
 
 
-def _check_https(url: str, result: dict) -> None:
+def _check_https(url: str, headers, result: dict) -> None:
     if url.startswith("http://"):
-        result["errors"].append("🔓 Сайт не использует HTTPS — данные передаются незащищённо!")
+        result["errors"].append("🔓 HTTPS отсутствует — данные передаются открыто")
     else:
         result["info"].append("🔒 HTTPS: защищённое соединение")
+
+    hsts = headers.get("Strict-Transport-Security", "")
+    if hsts:
+        max_age = re.search(r"max-age=(\d+)", hsts)
+        if max_age:
+            days = int(max_age.group(1)) // 86400
+            result["info"].append(f"🛡 HSTS активен (max-age: {days} дней)")
+    else:
+        if url.startswith("https://"):
+            result["warnings"].append("⚠️ HSTS не установлен (браузеры могут использовать HTTP)")
 
 
 def _check_seo(soup: BeautifulSoup, url: str, result: dict) -> None:
     title = soup.find("title")
     if not title or not title.get_text(strip=True):
-        result["errors"].append("❌ SEO: отсутствует тег &lt;title&gt;")
+        result["errors"].append("❌ SEO: тег <title> отсутствует")
     else:
-        t = escape(title.get_text(strip=True))
-        tlen = len(title.get_text(strip=True))
+        t = title.get_text(strip=True)
+        tlen = len(t)
         if tlen < 10:
             result["warnings"].append(f"⚠️ SEO: title слишком короткий ({tlen} симв.)")
         elif tlen > 70:
             result["warnings"].append(f"⚠️ SEO: title слишком длинный ({tlen} симв., рекомендуется ≤70)")
         else:
-            result["seo"].append(f"✅ Title ({tlen} симв.): «{t[:55]}{'…' if tlen > 55 else ''}»")
+            result["seo"].append(f"✅ Title ({tlen} симв.): «{escape(t[:60])}{'…' if tlen>60 else ''}»")
 
     meta_desc = soup.find("meta", attrs={"name": "description"})
     if not meta_desc or not meta_desc.get("content", "").strip():
-        result["warnings"].append("⚠️ SEO: отсутствует meta description")
+        result["warnings"].append("⚠️ SEO: meta description отсутствует")
     else:
-        desc_raw = meta_desc["content"].strip()
-        dlen = len(desc_raw)
+        d = meta_desc["content"].strip()
+        dlen = len(d)
         if dlen < 50:
             result["warnings"].append(f"⚠️ SEO: meta description слишком короткий ({dlen} симв.)")
         elif dlen > 160:
-            result["warnings"].append(f"⚠️ SEO: meta description слишком длинный ({dlen} симв., рекомендуется ≤160)")
+            result["warnings"].append(f"⚠️ SEO: meta description слишком длинный ({dlen} симв.)")
         else:
-            result["seo"].append(f"✅ Meta description ({dlen} симв.)")
+            result["seo"].append(f"✅ Meta description ({dlen} симв.): «{escape(d[:60])}…»")
 
     h1_tags = soup.find_all("h1")
+    h2_tags = soup.find_all("h2")
+    h3_tags = soup.find_all("h3")
+
     if not h1_tags:
-        result["warnings"].append("⚠️ SEO: нет тега &lt;h1&gt;")
+        result["warnings"].append("⚠️ SEO: тег <h1> отсутствует")
     elif len(h1_tags) > 1:
-        result["warnings"].append(f"⚠️ SEO: найдено {len(h1_tags)} тегов &lt;h1&gt; (рекомендуется 1)")
+        result["warnings"].append(f"⚠️ SEO: найдено {len(h1_tags)} тегов <h1> (рекомендуется один)")
     else:
-        h1_text = escape(h1_tags[0].get_text(strip=True))
-        result["seo"].append(f"✅ H1: «{h1_text[:50]}{'…' if len(h1_text) > 50 else ''}»")
+        h1_text = h1_tags[0].get_text(strip=True)
+        result["seo"].append(f"✅ H1: «{escape(h1_text[:50])}{'…' if len(h1_text)>50 else ''}»")
+
+    result["info"].append(f"📐 Заголовки: H1×{len(h1_tags)}, H2×{len(h2_tags)}, H3×{len(h3_tags)}")
 
     canonical = soup.find("link", attrs={"rel": "canonical"})
     if not canonical:
-        result["warnings"].append("⚠️ SEO: отсутствует canonical ссылка")
+        result["warnings"].append("⚠️ SEO: canonical-ссылка отсутствует")
     else:
-        result["seo"].append("✅ Canonical ссылка есть")
+        result["seo"].append(f"✅ Canonical: <code>{escape((canonical.get('href') or '')[:60])}</code>")
 
     og_title = soup.find("meta", attrs={"property": "og:title"})
     og_desc = soup.find("meta", attrs={"property": "og:description"})
     og_image = soup.find("meta", attrs={"property": "og:image"})
-    og_count = sum([bool(og_title), bool(og_desc), bool(og_image)])
+    og_url = soup.find("meta", attrs={"property": "og:url"})
+    og_type = soup.find("meta", attrs={"property": "og:type"})
+    og_count = sum(bool(x) for x in [og_title, og_desc, og_image, og_url, og_type])
     if og_count == 0:
-        result["warnings"].append("⚠️ SEO: отсутствуют Open Graph теги")
+        result["warnings"].append("⚠️ Open Graph теги отсутствуют (нет превью в соцсетях)")
     elif og_count < 3:
-        result["warnings"].append(f"⚠️ SEO: Open Graph неполный ({og_count}/3 тегов)")
+        result["warnings"].append(f"⚠️ Open Graph неполный ({og_count}/5 тегов)")
     else:
-        result["seo"].append("✅ Open Graph теги (og:title, og:description, og:image)")
+        result["seo"].append(f"✅ Open Graph: {og_count}/5 тегов")
 
     tw_card = soup.find("meta", attrs={"name": "twitter:card"})
+    tw_title = soup.find("meta", attrs={"name": "twitter:title"})
+    tw_img = soup.find("meta", attrs={"name": "twitter:image"})
     if not tw_card:
-        result["warnings"].append("⚠️ SEO: нет Twitter Card тегов")
+        result["warnings"].append("⚠️ Twitter Card отсутствует")
     else:
-        result["seo"].append("✅ Twitter Card присутствует")
+        tw_count = sum(bool(x) for x in [tw_card, tw_title, tw_img])
+        result["seo"].append(f"✅ Twitter Card: {tw_count}/3 тегов")
 
     viewport = soup.find("meta", attrs={"name": "viewport"})
     if not viewport:
-        result["errors"].append("❌ Адаптивность: нет meta viewport (плохо на мобильных)")
+        result["errors"].append("❌ Meta viewport отсутствует (проблемы на мобильных)")
     else:
-        result["seo"].append("✅ Meta viewport есть")
+        result["seo"].append(f"✅ Viewport: <code>{escape(viewport.get('content','')[:60])}</code>")
 
     robots_meta = soup.find("meta", attrs={"name": "robots"})
-    if robots_meta and "noindex" in robots_meta.get("content", "").lower():
-        result["warnings"].append("⚠️ SEO: страница закрыта от индексации (noindex)")
+    if robots_meta:
+        content = robots_meta.get("content", "").lower()
+        if "noindex" in content:
+            result["errors"].append("❌ SEO: страница закрыта от индексации (noindex)!")
+        elif "nofollow" in content:
+            result["warnings"].append("⚠️ SEO: ссылки не передают вес (nofollow)")
+        else:
+            result["seo"].append(f"✅ Robots meta: <code>{escape(content[:40])}</code>")
 
     favicon = (
         soup.find("link", rel=lambda r: r and "icon" in r)
         or soup.find("link", attrs={"rel": "shortcut icon"})
     )
     if not favicon:
-        result["warnings"].append("⚠️ Нет favicon (иконки сайта)")
+        result["warnings"].append("⚠️ Favicon (иконка) отсутствует")
     else:
         result["seo"].append("✅ Favicon присутствует")
 
     keywords = soup.find("meta", attrs={"name": "keywords"})
     if keywords and keywords.get("content", "").strip():
-        result["info"].append(f"🔑 Keywords: {escape(keywords['content'].strip()[:80])}")
+        result["info"].append(f"🔑 Keywords: <code>{escape(keywords['content'].strip()[:80])}</code>")
 
-
-def _check_performance(soup: BeautifulSoup, html: str, elapsed: float, result: dict) -> None:
-    if elapsed > 5:
-        result["errors"].append(f"🐢 Скорость: ответ {elapsed:.1f}с (критично медленно, норма &lt;3с)")
-    elif elapsed > 3:
-        result["warnings"].append(f"⚠️ Скорость: ответ {elapsed:.1f}с (рекомендуется &lt;3с)")
+    lang_tag = soup.find("html", attrs={"lang": True})
+    if lang_tag:
+        result["info"].append(f"🌐 Язык страницы: <b>{escape(lang_tag.get('lang', ''))}</b>")
     else:
-        result["info"].append(f"✅ Скорость ответа: {elapsed:.2f}с")
+        result["warnings"].append("⚠️ Атрибут lang у <html> отсутствует")
 
-    html_size_kb = len(html.encode("utf-8")) / 1024
-    if html_size_kb > 500:
-        result["warnings"].append(f"⚠️ Размер HTML: {html_size_kb:.0f} KB (рекомендуется &lt;500 KB)")
+
+def _check_performance(soup: BeautifulSoup, html: str, elapsed_ms: float, headers, result: dict) -> None:
+    if elapsed_ms > 5000:
+        result["errors"].append(f"🐢 Ответ: <b>{elapsed_ms:.0f}мс</b> — критически медленно (норма <1000мс)")
+    elif elapsed_ms > 2000:
+        result["warnings"].append(f"⚠️ Ответ: <b>{elapsed_ms:.0f}мс</b> — медленно (рекомендуется <1000мс)")
+    elif elapsed_ms > 1000:
+        result["info"].append(f"🟡 Ответ: <b>{elapsed_ms:.0f}мс</b> (допустимо, цель <1000мс)")
     else:
-        result["info"].append(f"📄 Размер HTML: {html_size_kb:.1f} KB")
+        result["info"].append(f"✅ Ответ: <b>{elapsed_ms:.0f}мс</b> — отлично")
+
+    html_bytes = len(html.encode("utf-8"))
+    html_kb = html_bytes / 1024
+    if html_kb > 500:
+        result["warnings"].append(f"⚠️ HTML: {html_kb:.0f} KB — слишком большой (рекомендуется <500 KB)")
+    else:
+        result["info"].append(f"📄 Размер HTML: <b>{html_kb:.1f} KB</b>")
 
     scripts = soup.find_all("script", src=True)
-    render_blocking = [s for s in scripts if not s.get("async") and not s.get("defer")]
-    total_scripts = len(scripts)
-    if len(render_blocking) > 3:
+    async_scripts = [s for s in scripts if s.get("async")]
+    defer_scripts = [s for s in scripts if s.get("defer")]
+    blocking = [s for s in scripts if not s.get("async") and not s.get("defer")]
+    inline_scripts = soup.find_all("script", src=False)
+
+    if len(blocking) > 3:
         result["warnings"].append(
-            f"⚠️ Производительность: {len(render_blocking)}/{total_scripts} скриптов блокируют рендеринг (нет async/defer)"
+            f"⚠️ Скриптов без async/defer: <b>{len(blocking)}</b> из {len(scripts)} (блокируют рендеринг)"
         )
-    else:
-        result["info"].append(f"📜 Скрипты: {total_scripts} ({len(render_blocking)} блокирующих)")
+    result["info"].append(
+        f"📜 Скрипты: <b>{len(scripts)}</b> внешних ({len(async_scripts)} async, {len(defer_scripts)} defer, {len(blocking)} блокирующих), <b>{len(inline_scripts)}</b> встроенных"
+    )
 
     styles = soup.find_all("link", rel="stylesheet")
+    inline_styles = soup.find_all("style")
     if len(styles) > 10:
-        result["warnings"].append(f"⚠️ Производительность: {len(styles)} CSS-файлов (стоит объединить)")
+        result["warnings"].append(f"⚠️ CSS файлов: <b>{len(styles)}</b> (рекомендуется объединять)")
     else:
-        result["info"].append(f"🎨 CSS-файлов: {len(styles)}")
+        result["info"].append(f"🎨 CSS: <b>{len(styles)}</b> файлов + <b>{len(inline_styles)}</b> встроенных")
 
     images = soup.find_all("img")
-    lazy_images = [img for img in images if img.get("loading") == "lazy"]
-    result["info"].append(f"🖼 Изображений: {len(images)} ({len(lazy_images)} с lazy loading)")
+    lazy_imgs = [i for i in images if i.get("loading") == "lazy"]
+    no_alt = [i for i in images if not i.get("alt")]
+    webp_imgs = [i for i in images if ".webp" in (i.get("src") or "")]
+    result["info"].append(
+        f"🖼 Изображения: <b>{len(images)}</b> шт. ({len(lazy_imgs)} lazy, {len(webp_imgs)} WebP, {len(no_alt)} без alt)"
+    )
 
-    text = soup.get_text(separator=" ", strip=True)
-    words = len(text.split())
-    result["info"].append(f"📝 Слов на странице: {words}")
+    iframes = soup.find_all("iframe")
+    if iframes:
+        result["info"].append(f"🖥 Iframe: <b>{len(iframes)}</b> (могут замедлять страницу)")
+
+    preload = soup.find_all("link", rel="preload")
+    prefetch = soup.find_all("link", rel="prefetch")
+    preconnect = soup.find_all("link", rel="preconnect")
+    if preload or prefetch or preconnect:
+        result["info"].append(
+            f"⚡ Resource hints: {len(preload)} preload, {len(prefetch)} prefetch, {len(preconnect)} preconnect"
+        )
+    else:
+        result["warnings"].append("⚠️ Resource hints отсутствуют (preload/preconnect/prefetch)")
+
+    ce = headers.get("Content-Encoding", "")
+    if "gzip" in ce or "br" in ce or "deflate" in ce:
+        result["info"].append(f"✅ Сжатие: <b>{ce}</b>")
+    else:
+        result["warnings"].append("⚠️ HTTP-сжатие не обнаружено (gzip/brotli не активны)")
+
+    cache_ctrl = headers.get("Cache-Control", "")
+    if cache_ctrl:
+        result["info"].append(f"📦 Cache-Control: <code>{escape(cache_ctrl[:60])}</code>")
+    else:
+        result["warnings"].append("⚠️ Cache-Control заголовок отсутствует")
+
+    etag = headers.get("ETag", "")
+    last_mod = headers.get("Last-Modified", "")
+    if etag or last_mod:
+        cache_info = []
+        if etag:
+            cache_info.append(f"ETag: {escape(etag[:30])}")
+        if last_mod:
+            cache_info.append(f"Last-Modified: {last_mod[:30]}")
+        result["info"].append("✅ Кэширование: " + " | ".join(cache_info))
+    else:
+        result["warnings"].append("⚠️ ETag/Last-Modified отсутствуют (браузерный кэш не настроен)")
 
 
 def _check_security(headers, result: dict) -> None:
-    security_headers = {
-        "X-Content-Type-Options": "защита от MIME-sniffing",
-        "X-Frame-Options": "защита от clickjacking",
-        "Strict-Transport-Security": "принудительный HTTPS (HSTS)",
-        "Content-Security-Policy": "политика безопасности (CSP)",
-        "Referrer-Policy": "политика реферера",
-        "Permissions-Policy": "политика разрешений браузера",
+    sec = {
+        "X-Content-Type-Options":     ("защита от MIME-sniffing", "nosniff"),
+        "X-Frame-Options":             ("защита от clickjacking", None),
+        "Content-Security-Policy":     ("политика безопасности (CSP)", None),
+        "Referrer-Policy":             ("политика реферера", None),
+        "Permissions-Policy":          ("политика разрешений", None),
+        "X-XSS-Protection":            ("защита от XSS (старые браузеры)", None),
+        "Cross-Origin-Opener-Policy":  ("COOP: изоляция вкладок", None),
+        "Cross-Origin-Resource-Policy":("CORP: защита ресурсов", None),
     }
-    missing = []
-    present = []
-    for h, desc in security_headers.items():
-        if h not in headers:
-            missing.append(f"{h}")
-        else:
+    present, missing = [], []
+    for h, (desc, expected) in sec.items():
+        val = headers.get(h, "")
+        if val:
             present.append(h)
+            if expected and val.lower() != expected.lower():
+                result["warnings"].append(f"⚠️ {h}: значение <code>{escape(val[:40])}</code> (рекомендуется: {expected})")
+        else:
+            missing.append(f"{h} ({desc})")
 
     if missing:
         result["warnings"].append(
-            f"⚠️ Безопасность: нет заголовков ({len(missing)}/{len(security_headers)}):\n"
-            + "\n".join(f"   • {h}" for h in missing)
+            f"⚠️ Отсутствуют заголовки безопасности ({len(missing)}/{len(sec)}):\n" +
+            "\n".join(f"   • {m}" for m in missing)
         )
     else:
-        result["info"].append("✅ Все заголовки безопасности присутствуют")
+        result["info"].append(f"✅ Все {len(sec)} заголовков безопасности присутствуют")
 
     server = headers.get("Server", "")
     if server:
-        result["warnings"].append(f"⚠️ Server раскрывает версию: <code>{escape(server)}</code>")
+        if any(v in server.lower() for v in ["nginx/", "apache/", "iis/", "openresty/"]):
+            result["warnings"].append(f"⚠️ Server раскрывает версию ПО: <code>{escape(server[:40])}</code>")
+        else:
+            result["info"].append(f"🖥 Server: <code>{escape(server[:40])}</code>")
 
     x_powered = headers.get("X-Powered-By", "")
     if x_powered:
-        result["warnings"].append(f"⚠️ X-Powered-By раскрывает технологию: <code>{escape(x_powered)}</code>")
+        result["warnings"].append(f"⚠️ X-Powered-By раскрывает технологию: <code>{escape(x_powered[:40])}</code>")
+
+    csp = headers.get("Content-Security-Policy", "")
+    if csp:
+        if "unsafe-inline" in csp:
+            result["warnings"].append("⚠️ CSP содержит 'unsafe-inline' (XSS-уязвимость)")
+        if "unsafe-eval" in csp:
+            result["warnings"].append("⚠️ CSP содержит 'unsafe-eval' (XSS-уязвимость)")
+
+    result["security_headers"] = {
+        h: bool(headers.get(h)) for h in sec.keys()
+    }
 
 
 def _check_accessibility(soup: BeautifulSoup, result: dict) -> None:
-    imgs_no_alt = [img for img in soup.find_all("img") if not img.get("alt")]
-    if imgs_no_alt:
-        result["warnings"].append(
-            f"⚠️ Доступность: {len(imgs_no_alt)} изображений без атрибута alt"
-        )
-    else:
-        total_imgs = len(soup.find_all("img"))
-        if total_imgs > 0:
-            result["info"].append(f"✅ Все {total_imgs} изображений имеют alt")
+    imgs = soup.find_all("img")
+    no_alt = [i for i in imgs if not i.get("alt") and not i.get("role") == "presentation"]
+    if no_alt:
+        result["warnings"].append(f"⚠️ Доступность: <b>{len(no_alt)}</b> изображений без alt")
+    elif imgs:
+        result["info"].append(f"✅ Все {len(imgs)} изображений имеют alt")
 
-    inputs_no_label = []
     for inp in soup.find_all("input"):
-        if inp.get("type") in ("text", "email", "password", "number", "tel", None):
+        if inp.get("type") in ("text", "email", "password", "number", "tel"):
             inp_id = inp.get("id")
             has_label = bool(inp_id and soup.find("label", attrs={"for": inp_id}))
-            has_aria = bool(inp.get("aria-label") or inp.get("aria-labelledby"))
+            has_aria = bool(inp.get("aria-label") or inp.get("aria-labelledby") or inp.get("placeholder"))
             if not has_label and not has_aria:
-                inputs_no_label.append(inp)
-    if inputs_no_label:
-        result["warnings"].append(
-            f"⚠️ Доступность: {len(inputs_no_label)} полей ввода без label/aria-label"
-        )
+                result["warnings"].append("⚠️ Доступность: поля ввода без label или aria-label")
+                break
 
-    lang = soup.find("html", attrs={"lang": True})
-    if not lang:
-        result["warnings"].append("⚠️ Доступность: у тега &lt;html&gt; нет атрибута lang")
+    aria_roles = soup.find_all(attrs={"role": True})
+    if not aria_roles:
+        result["warnings"].append("⚠️ ARIA-роли отсутствуют (плохая доступность для скринридеров)")
     else:
-        result["info"].append(f"🌐 Язык страницы: {escape(lang.get('lang', ''))}")
+        result["info"].append(f"✅ ARIA-атрибуты: <b>{len(aria_roles)}</b> элементов")
 
-    skip_link = soup.find("a", href="#main") or soup.find("a", href="#content")
-    if not skip_link:
-        result["info"].append("ℹ️ Доступность: нет skip-link (необязательно, но улучшает доступность)")
+    tabindex = soup.find_all(attrs={"tabindex": True})
+    if tabindex:
+        result["info"].append(f"⌨️ Tabindex: <b>{len(tabindex)}</b> элементов с keyboard-навигацией")
 
 
 def _check_links(soup: BeautifulSoup, base_url: str, result: dict) -> None:
@@ -275,146 +390,329 @@ def _check_links(soup: BeautifulSoup, base_url: str, result: dict) -> None:
     base_domain = parsed.netloc
 
     all_links = soup.find_all("a", href=True)
-    external_links = []
-    empty_links = []
-    nofollow_links = []
+    external, broken_text, nofollow, sponsored = [], [], [], []
 
     for a in all_links:
         href = a["href"].strip()
         rel = a.get("rel", [])
+        if isinstance(rel, str):
+            rel = [rel]
+        text_val = a.get_text(strip=True)
+
         if not href or href == "#":
-            empty_links.append(a)
+            broken_text.append(a)
         elif href.startswith("http"):
             link_domain = urlparse(href).netloc
             if link_domain and link_domain != base_domain:
-                external_links.append(href)
+                external.append(href)
                 if "nofollow" in rel:
-                    nofollow_links.append(href)
+                    nofollow.append(href)
+                if "sponsored" in rel:
+                    sponsored.append(href)
 
     result["info"].append(
-        f"🔗 Ссылки: {len(all_links)} всего, {len(external_links)} внешних, {len(nofollow_links)} nofollow"
+        f"🔗 Ссылки: <b>{len(all_links)}</b> всего, <b>{len(external)}</b> внешних"
+        f" ({len(nofollow)} nofollow, {len(sponsored)} sponsored)"
     )
-    if empty_links:
-        result["warnings"].append(f"⚠️ Пустые/якорные ссылки (#): {len(empty_links)} шт.")
+    if broken_text:
+        result["warnings"].append(f"⚠️ Пустые/якорные ссылки: <b>{len(broken_text)}</b> шт.")
 
 
 def _check_tech(soup: BeautifulSoup, headers, html: str, result: dict) -> None:
     detected = []
-
-    generator = soup.find("meta", attrs={"name": "generator"})
-    if generator and generator.get("content"):
-        detected.append(f"⚙️ {escape(generator['content'])}")
-
     html_lower = html.lower()
 
-    if "wp-content" in html_lower or "wp-includes" in html_lower:
-        detected.append("📦 WordPress")
-    if "bitrix" in html_lower or "1c-bitrix" in html_lower:
-        detected.append("📦 1C-Bitrix")
-    if "__next" in html or "/_next/" in html:
-        detected.append("⚛️ Next.js")
-    if "nuxt" in html_lower:
-        detected.append("💚 Nuxt.js")
-    if "react" in html_lower and "react-dom" in html_lower:
-        detected.append("⚛️ React")
-    if "vue.js" in html_lower or "vue.min.js" in html_lower:
-        detected.append("💚 Vue.js")
-    if "angular" in html_lower and "ng-version" in html_lower:
-        detected.append("🔴 Angular")
-    if "jquery" in html_lower:
-        detected.append("🔧 jQuery")
-    if "bootstrap" in html_lower:
-        detected.append("🅱️ Bootstrap")
-    if "tailwind" in html_lower:
-        detected.append("🌊 Tailwind CSS")
-    if "shopify" in html_lower:
-        detected.append("🛒 Shopify")
-    if "tilda" in html_lower:
-        detected.append("🔵 Tilda")
-    if "wix.com" in html_lower:
-        detected.append("🎨 Wix")
+    gen = soup.find("meta", attrs={"name": "generator"})
+    if gen and gen.get("content"):
+        detected.append(f"⚙️ Generator: {escape(gen['content'][:40])}")
+
+    frameworks = [
+        ("wp-content" in html_lower or "wp-includes" in html_lower, "📦 WordPress"),
+        ("bitrix" in html_lower or "1c-bitrix" in html_lower, "📦 1C-Bitrix"),
+        ("__next" in html or "/_next/" in html, "⚛️ Next.js"),
+        ("nuxt" in html_lower and "__nuxt" in html_lower, "💚 Nuxt.js"),
+        ("react" in html_lower and "react-dom" in html_lower, "⚛️ React"),
+        ("vue.js" in html_lower or "vue.min.js" in html_lower or "__vue__" in html, "💚 Vue.js"),
+        ("angular" in html_lower and "ng-version" in html_lower, "🔴 Angular"),
+        ("svelte" in html_lower, "🟠 Svelte"),
+        ("jquery" in html_lower, "🔧 jQuery"),
+        ("bootstrap" in html_lower, "🅱️ Bootstrap"),
+        ("tailwind" in html_lower, "🌊 Tailwind CSS"),
+        ("shopify" in html_lower, "🛒 Shopify"),
+        ("tilda" in html_lower, "🔵 Tilda"),
+        ("wix.com" in html_lower, "🎨 Wix"),
+        ("joomla" in html_lower, "🟤 Joomla"),
+        ("drupal" in html_lower, "💧 Drupal"),
+        ("laravel" in html_lower, "🔴 Laravel"),
+        ("django" in html_lower, "🐍 Django"),
+    ]
+    for cond, label in frameworks:
+        if cond:
+            detected.append(label)
 
     server = headers.get("Server", "")
     if server:
-        if "nginx" in server.lower():
-            detected.append("🖥 Nginx")
-        elif "apache" in server.lower():
-            detected.append("🖥 Apache")
-        elif "cloudflare" in server.lower():
-            detected.append("🌩 Cloudflare")
+        s_lower = server.lower()
+        if "nginx" in s_lower:
+            detected.append(f"🖥 Nginx")
+        elif "apache" in s_lower:
+            detected.append(f"🖥 Apache")
+        elif "cloudflare" in s_lower:
+            detected.append("🌩 Cloudflare Server")
+        elif "iis" in s_lower:
+            detected.append("🪟 IIS (Windows Server)")
+        elif "openresty" in s_lower:
+            detected.append("🖥 OpenResty (Nginx+Lua)")
 
     x_powered = headers.get("X-Powered-By", "")
-    if x_powered:
-        if "php" in x_powered.lower():
-            detected.append(f"🐘 PHP ({escape(x_powered)})")
-        elif "asp.net" in x_powered.lower():
-            detected.append(f"🔷 ASP.NET")
+    if "php" in x_powered.lower():
+        detected.append(f"🐘 PHP ({escape(x_powered[:30])})")
+    elif "asp.net" in x_powered.lower():
+        detected.append("🔷 ASP.NET")
+
+    cdn_headers = {
+        "CF-RAY": "🌩 Cloudflare CDN",
+        "X-Served-By": "🚀 Fastly CDN",
+        "X-Cache": "📡 Cache Layer",
+        "X-Akamai-Transformed": "🌐 Akamai CDN",
+        "X-CDN": "📡 CDN активен",
+    }
+    for h, label in cdn_headers.items():
+        if headers.get(h):
+            detected.append(label)
+            break
 
     if detected:
         result["tech"] = detected
 
 
 def _check_structured_data(soup: BeautifulSoup, result: dict) -> None:
+    import json
     json_ld = soup.find_all("script", attrs={"type": "application/ld+json"})
     microdata = soup.find_all(attrs={"itemtype": True})
+    rdfa = soup.find_all(attrs={"vocab": True})
+
+    types_found = []
+    for block in json_ld:
+        try:
+            data = json.loads(block.string or "")
+            t = data.get("@type", "")
+            if t:
+                types_found.append(t)
+        except Exception:
+            pass
 
     if json_ld:
-        result["seo"].append(f"✅ Структурированные данные (JSON-LD): {len(json_ld)} блоков")
+        type_str = ", ".join(types_found[:5]) if types_found else "неизвестный тип"
+        result["seo"].append(f"✅ JSON-LD разметка: <b>{len(json_ld)}</b> блоков ({type_str})")
     elif microdata:
-        result["seo"].append(f"✅ Структурированные данные (Microdata): {len(microdata)} элементов")
+        result["seo"].append(f"✅ Microdata разметка: <b>{len(microdata)}</b> элементов")
+    elif rdfa:
+        result["seo"].append(f"✅ RDFa разметка: <b>{len(rdfa)}</b> элементов")
     else:
-        result["warnings"].append("⚠️ SEO: нет структурированных данных (Schema.org/JSON-LD)")
+        result["warnings"].append("⚠️ Структурированные данные отсутствуют (Schema.org/JSON-LD)")
 
 
 def _check_analytics(html: str, result: dict) -> None:
     analytics = []
     html_lower = html.lower()
 
-    if "google-analytics.com" in html_lower or "gtag(" in html_lower or "ga(" in html_lower:
-        analytics.append("📊 Google Analytics")
-    if "googletagmanager.com" in html_lower:
-        analytics.append("📊 Google Tag Manager")
-    if "metrika.yandex" in html_lower or "mc.yandex" in html_lower:
-        analytics.append("📊 Яндекс.Метрика")
-    if "connect.facebook.net" in html_lower or "fbq(" in html_lower:
-        analytics.append("📘 Facebook Pixel")
-    if "vk.com/js/api" in html_lower:
-        analytics.append("🔵 VK Pixel")
+    checks = [
+        ("google-analytics.com" in html_lower or "gtag(" in html_lower, "📊 Google Analytics"),
+        ("googletagmanager.com" in html_lower, "📊 Google Tag Manager"),
+        ("metrika.yandex" in html_lower or "mc.yandex" in html_lower, "📊 Яндекс.Метрика"),
+        ("connect.facebook.net" in html_lower or "fbq(" in html_lower, "📘 Facebook Pixel"),
+        ("vk.com/js/api" in html_lower, "🔵 VK Pixel"),
+        ("hotjar.com" in html_lower, "🟠 Hotjar"),
+        ("clarity.ms" in html_lower, "💙 Microsoft Clarity"),
+        ("mixpanel.com" in html_lower, "📈 Mixpanel"),
+        ("segment.com" in html_lower or "segment.io" in html_lower, "📡 Segment"),
+        ("amplitude.com" in html_lower, "📊 Amplitude"),
+    ]
+    for cond, label in checks:
+        if cond:
+            analytics.append(label)
 
     if analytics:
-        result["info"].append("📡 Системы аналитики: " + ", ".join(analytics))
+        result["info"].append("📡 Аналитика: " + ", ".join(analytics))
     else:
-        result["warnings"].append("⚠️ Не найдено систем веб-аналитики")
+        result["warnings"].append("⚠️ Системы веб-аналитики не обнаружены")
 
 
-async def _check_extras(session: aiohttp.ClientSession, url: str, result: dict) -> None:
+def _check_content_quality(soup: BeautifulSoup, html: str, result: dict) -> None:
+    text = soup.get_text(separator=" ", strip=True)
+    words = len(text.split())
+    chars = len(text)
+
+    if words < 100:
+        result["warnings"].append(f"⚠️ Мало контента: <b>{words}</b> слов (рекомендуется >300 для SEO)")
+    elif words < 300:
+        result["info"].append(f"📝 Контент: <b>{words}</b> слов (рекомендуется >300 для SEO)")
+    else:
+        result["info"].append(f"✅ Контент: <b>{words}</b> слов ({chars} символов)")
+
+    paragraphs = soup.find_all("p")
+    result["info"].append(f"📄 Абзацев: <b>{len(paragraphs)}</b>")
+
+    forms = soup.find_all("form")
+    if forms:
+        for form in forms:
+            action = form.get("action", "")
+            method = form.get("method", "get").upper()
+            result["info"].append(f"📋 Форма: method={method}, action={escape(action[:40] or '(none)')}")
+
+    has_mixed = re.search(r'src=["\']http://', html, re.IGNORECASE)
+    if has_mixed and html.startswith("<!DOCTYPE html"):
+        result["warnings"].append("⚠️ Смешанный контент (Mixed Content): HTTP-ресурсы на HTTPS-странице")
+
+
+def _check_mobile(soup: BeautifulSoup, result: dict) -> None:
+    viewport = soup.find("meta", attrs={"name": "viewport"})
+    if viewport:
+        content = viewport.get("content", "")
+        if "width=device-width" in content:
+            result["info"].append("✅ Адаптивный: viewport корректно настроен")
+        else:
+            result["warnings"].append("⚠️ Viewport задан, но без width=device-width")
+
+    media_queries = sum(1 for s in soup.find_all("style") if "@media" in (s.string or ""))
+    link_styles = soup.find_all("link", rel="stylesheet")
+    if media_queries > 0 or len(link_styles) > 0:
+        result["info"].append(f"📱 Media queries в <style>: <b>{media_queries}</b> блоков")
+
+    touch_icon = soup.find("link", rel=lambda r: r and "apple-touch-icon" in r)
+    manifest = soup.find("link", rel="manifest")
+    pwa_parts = []
+    if touch_icon:
+        pwa_parts.append("apple-touch-icon")
+    if manifest:
+        pwa_parts.append("web manifest")
+    if pwa_parts:
+        result["info"].append(f"📱 PWA-элементы: {', '.join(pwa_parts)}")
+
+
+def _check_social(soup: BeautifulSoup, result: dict) -> None:
+    socials = {
+        "vk.com": "ВКонтакте",
+        "t.me": "Telegram",
+        "youtube.com": "YouTube",
+        "instagram.com": "Instagram",
+        "facebook.com": "Facebook",
+        "twitter.com": "Twitter/X",
+        "linkedin.com": "LinkedIn",
+        "tiktok.com": "TikTok",
+        "ok.ru": "Одноклассники",
+    }
+    found_socials = []
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        for domain, name in socials.items():
+            if domain in href and name not in found_socials:
+                found_socials.append(name)
+
+    if found_socials:
+        result["info"].append("📣 Соцсети на странице: " + ", ".join(found_socials))
+
+
+async def _check_extras(session: aiohttp.ClientSession, url: str, headers, result: dict) -> None:
     parsed = urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}"
+    host = parsed.netloc.split(":")[0]
 
     checks = [
         (f"{base}/robots.txt", "🤖 robots.txt"),
         (f"{base}/sitemap.xml", "🗺 sitemap.xml"),
+        (f"{base}/sitemap_index.xml", "🗺 sitemap_index.xml"),
+        (f"{base}/.well-known/security.txt", "🔒 security.txt"),
+        (f"{base}/favicon.ico", "🔖 favicon.ico"),
     ]
 
+    tasks = []
     for check_url, label in checks:
-        try:
-            async with session.get(
-                check_url,
-                timeout=aiohttp.ClientTimeout(total=5),
-                allow_redirects=True,
-            ) as r:
-                if r.status == 200:
-                    result["seo"].append(f"✅ {label} найден")
+        tasks.append(_check_url_exists(session, check_url, label))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for item in results:
+        if isinstance(item, tuple):
+            ok, msg = item
+            if ok:
+                result["seo"].append(msg)
+            else:
+                result["warnings"].append(msg)
+
+    try:
+        ctx = ssl.create_default_context()
+        conn = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: ssl.SSLContext.wrap_socket(ctx, socket.create_connection((host, 443), timeout=5), server_hostname=host)
+            ),
+            timeout=6
+        )
+        cert = conn.getpeercert()
+        conn.close()
+        if cert:
+            import datetime
+            expires_str = cert.get("notAfter", "")
+            if expires_str:
+                expires = datetime.datetime.strptime(expires_str, "%b %d %H:%M:%S %Y %Z")
+                days_left = (expires - datetime.datetime.utcnow()).days
+                if days_left < 14:
+                    result["errors"].append(f"❌ SSL сертификат истекает через <b>{days_left}</b> дней!")
+                elif days_left < 30:
+                    result["warnings"].append(f"⚠️ SSL сертификат истекает через <b>{days_left}</b> дней")
                 else:
-                    result["warnings"].append(f"⚠️ {label} не найден (статус {r.status})")
-        except Exception:
-            result["warnings"].append(f"⚠️ {label} недоступен")
+                    result["info"].append(f"🔐 SSL сертификат действителен ещё <b>{days_left}</b> дней")
+
+            issuer = dict(x[0] for x in cert.get("issuer", []))
+            org = issuer.get("organizationName", "")
+            if org:
+                result["info"].append(f"🏢 Выдан: <b>{escape(org[:50])}</b>")
+    except Exception:
+        pass
 
 
-def _calc_score(data: dict) -> tuple[int, str]:
-    errors = len(data["errors"])
-    warnings = len(data["warnings"])
-    score = max(0, 100 - errors * 15 - warnings * 5)
+async def _check_url_exists(session, url: str, label: str) -> tuple[bool, str]:
+    try:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=6),
+            allow_redirects=True,
+        ) as r:
+            if r.status == 200:
+                size = len(await r.read())
+                return True, f"✅ {label} найден ({size} байт)"
+            else:
+                return False, f"⚠️ {label} вернул статус {r.status}"
+    except Exception:
+        return False, f"⚠️ {label} недоступен"
+
+
+def _calc_score(data: dict) -> int:
+    score = 100
+    score -= len(data.get("errors", [])) * 12
+    score -= len(data.get("warnings", [])) * 4
+
+    perf = data.get("performance", {})
+    rt = perf.get("response_time", 0)
+    if rt > 5000:
+        score -= 15
+    elif rt > 2000:
+        score -= 8
+    elif rt > 1000:
+        score -= 3
+
+    seo_count = len(data.get("seo", []))
+    if seo_count >= 8:
+        score += 5
+    elif seo_count >= 5:
+        score += 2
+
+    return max(0, min(100, score))
+
+
+def format_report(data: dict) -> str:
+    score = data.get("score", 0)
     if score >= 85:
         emoji = "🟢"
     elif score >= 65:
@@ -423,45 +721,38 @@ def _calc_score(data: dict) -> tuple[int, str]:
         emoji = "🟠"
     else:
         emoji = "🔴"
-    return score, emoji
 
-
-def format_report(data: dict) -> str:
-    score, emoji = _calc_score(data)
     perf = data.get("performance", {})
     lines = [
-        f"🌐 <b>Отчёт по сайту</b>",
+        f"🌐 <b>Анализ сайта</b>",
         f"<code>{escape(data['url'])}</code>",
         "",
+        f"{emoji} <b>Оценка: {score}/100</b>  · {len(data.get('errors',[]))} ошибок · {len(data.get('warnings',[]))} предупреждений",
     ]
 
     if perf.get("status_code"):
-        lines.append(f"📡 HTTP-статус: <b>{perf['status_code']}</b>")
-    if perf.get("response_time"):
-        lines.append(f"⏱ Время ответа: <b>{perf['response_time']}с</b>")
-    lines.append(f"{emoji} Оценка: <b>{score}/100</b>  ({len(data['errors'])} ошибок, {len(data['warnings'])} предупреждений)")
+        lines.append(f"📡 HTTP: <b>{perf['status_code']}</b>  |  ⏱ {perf.get('response_time', 0)} мс")
 
-    if data["errors"]:
-        lines.append("\n<b>🔴 Ошибки:</b>")
+    if data.get("errors"):
+        lines.append("\n<b>🔴 Критические ошибки:</b>")
         lines.extend(f"  {e}" for e in data["errors"])
 
-    if data["warnings"]:
+    if data.get("warnings"):
         lines.append("\n<b>🟡 Предупреждения:</b>")
-        lines.extend(f"  {w}" for w in data["warnings"])
+        lines.extend(f"  {w}" for w in data["warnings"][:10])
+        if len(data["warnings"]) > 10:
+            lines.append(f"  ...и ещё {len(data['warnings'])-10} (см. отчёт)")
 
-    if data["seo"]:
+    if data.get("seo"):
         lines.append("\n<b>🔎 SEO:</b>")
-        lines.extend(f"  {s}" for s in data["seo"])
+        lines.extend(f"  {s}" for s in data["seo"][:8])
 
     if data.get("tech"):
-        lines.append("\n<b>🛠 Технологии:</b>")
-        lines.extend(f"  {t}" for t in data["tech"])
+        lines.append("\n<b>🛠 Стек:</b>")
+        lines.extend(f"  {t}" for t in data["tech"][:6])
 
-    if data["info"]:
-        lines.append("\n<b>📊 Информация:</b>")
-        lines.extend(f"  {i}" for i in data["info"])
-
-    if not data["errors"] and not data["warnings"]:
-        lines.append("\n🎉 <b>Серьёзных проблем не найдено!</b>")
+    if data.get("info"):
+        lines.append("\n<b>📊 Детали:</b>")
+        lines.extend(f"  {i}" for i in data["info"][:8])
 
     return "\n".join(lines)
