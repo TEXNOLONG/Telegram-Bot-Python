@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hayder Project</title>
+  <title>LoadTest Pro</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #07070f;
+      background: #0a0000;
       color: #e2e8f0;
       min-height: 100vh;
       display: flex; align-items: center; justify-content: center;
@@ -17,48 +17,54 @@
       content: '';
       position: fixed; inset: 0;
       background-image:
-        linear-gradient(rgba(99,102,241,.05) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(99,102,241,.05) 1px, transparent 1px);
+        linear-gradient(rgba(220,38,38,.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(220,38,38,.06) 1px, transparent 1px);
       background-size: 60px 60px;
     }
     .card {
       position: relative; z-index: 1;
-      background: rgba(14,14,26,.95);
-      border: 1px solid rgba(99,102,241,.15);
+      background: rgba(12,0,0,.97);
+      border: 1px solid rgba(220,38,38,.25);
       border-radius: 18px;
       padding: 48px 40px;
-      max-width: 400px; width: 90%;
+      max-width: 420px; width: 90%;
       text-align: center;
+      box-shadow: 0 0 60px rgba(220,38,38,.08);
     }
     .icon {
-      width: 64px; height: 64px;
-      background: linear-gradient(135deg,#6366f1,#8b5cf6);
+      width: 68px; height: 68px;
+      background: linear-gradient(135deg,#dc2626,#991b1b);
       border-radius: 16px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 26px; margin: 0 auto 22px;
+      font-size: 28px; margin: 0 auto 22px;
+      box-shadow: 0 0 24px rgba(220,38,38,.4);
     }
-    h1 { font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
-    p { color: #475569; font-size: .9rem; margin-bottom: 28px; }
+    h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
+    p { color: #64748b; font-size: .9rem; margin-bottom: 28px; }
     .status {
       display: inline-flex; align-items: center; gap: 8px;
-      background: rgba(16,185,129,.08); border: 1px solid rgba(16,185,129,.2);
+      background: rgba(220,38,38,.08); border: 1px solid rgba(220,38,38,.2);
       border-radius: 30px; padding: 8px 18px;
-      color: #10b981; font-size: .85rem; font-weight: 600;
+      color: #ef4444; font-size: .85rem; font-weight: 600;
     }
-    .dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981;
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #ef4444;
            animation: pulse 1.8s infinite; }
     @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.35} }
+    .divider { margin: 28px 0; border: none; border-top: 1px solid rgba(220,38,38,.12); }
+    .tagline { font-size: .78rem; color: #374151; letter-spacing: .06em; text-transform: uppercase; }
   </style>
 </head>
 <body>
   <div class="card">
     <div class="icon">⚡</div>
-    <h1>Hayder Project</h1>
+    <h1>LoadTest Pro</h1>
     <p>Платформа нагрузочного тестирования</p>
     <div class="status">
       <div class="dot"></div>
       Онлайн
     </div>
+    <hr class="divider">
+    <span class="tagline">Powered by Hayder Project</span>
   </div>
 </body>
 </html>

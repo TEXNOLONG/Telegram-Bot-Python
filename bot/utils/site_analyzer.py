@@ -739,24 +739,6 @@ async def _check_vulnerabilities(session: aiohttp.ClientSession, url: str, html:
     result["vulnerabilities"] = vulns
 
 
-def _check_content_quality(soup: BeautifulSoup, html: str, result: dict) -> None:
-    body = soup.find("body")
-    if not body:
-        return
-    text = body.get_text(separator=" ", strip=True)
-    words = text.split()
-    word_count = len(words)
-    if word_count < 100:
-        result["warnings"].append(f"⚠️ Контент: <b>{word_count}</b> слов — маловато (рекомендуется 300+)")
-    elif word_count > 3000:
-        result["info"].append(f"📝 Контент: <b>{word_count}</b> слов — объёмная страница")
-    else:
-        result["info"].append(f"📝 Контент: <b>{word_count}</b> слов")
-    forms = soup.find_all("form")
-    if forms:
-        result["info"].append(f"📋 Форм: <b>{len(forms)}</b> шт.")
-
-
 def _calc_score(result: dict) -> int:
     score = 100
     score -= len(result.get("errors", [])) * 10
@@ -774,6 +756,20 @@ def _calc_score(result: dict) -> int:
     return max(0, min(100, score))
 
 
+def _plain(text: str, maxlen: int = 90) -> str:
+    """Strip HTML tags and entities, take first line, truncate safely."""
+    import html as _html_mod
+    # Decode entities like &lt; → <
+    text = _html_mod.unescape(text)
+    # Strip HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Take first line only (some messages have embedded \n)
+    text = text.split("\n")[0].strip()
+    if len(text) > maxlen:
+        text = text[:maxlen] + "…"
+    return text
+
+
 def format_report(result: dict) -> str:
     lines = []
     url = result.get("url", "")
@@ -781,49 +777,50 @@ def format_report(result: dict) -> str:
     perf = result.get("performance", {})
 
     emoji = "🟢" if score >= 70 else ("🟡" if score >= 45 else "🔴")
-    lines.append(f"<b>Анализ сайта</b> {emoji}\n")
+    lines.append(f"<b>Анализ сайта</b> {emoji}")
     lines.append(f"🌐 <code>{escape(url)}</code>")
     lines.append(f"⭐ Оценка: <b>{score}/100</b>")
 
     if perf.get("response_time"):
         rt = int(perf["response_time"])
-        lines.append(f"⚡ Ответ: <b>{rt} мс</b>")
+        rt_emoji = "✅" if rt < 500 else ("🟡" if rt < 1500 else "🔴")
+        lines.append(f"{rt_emoji} Ответ: <b>{rt} мс</b>")
     if perf.get("status_code"):
-        lines.append(f"📡 HTTP статус: <b>{perf['status_code']}</b>")
+        lines.append(f"📡 HTTP: <b>{perf['status_code']}</b>")
     if perf.get("http_version"):
-        lines.append(f"🔌 Протокол: HTTP/<b>{perf['http_version']}</b>")
+        lines.append(f"🔌 Протокол: <b>HTTP/{perf['http_version']}</b>")
     if perf.get("compression") and perf["compression"] != "none":
         lines.append(f"🗜 Сжатие: <b>{perf['compression']}</b>")
 
     vulns = result.get("vulnerabilities", [])
     if vulns:
         lines.append(f"\n🔓 <b>Уязвимости ({len(vulns)}):</b>")
-        for sev, msg in vulns[:4]:
+        for sev, msg in vulns[:5]:
             sev_emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
-            lines.append(f"  {sev_emoji} [{sev}] {msg[:80]}")
-        if len(vulns) > 4:
-            lines.append(f"  <i>...и ещё {len(vulns) - 4}</i>")
+            lines.append(f"  {sev_emoji} <b>[{sev}]</b> {escape(_plain(msg))}")
+        if len(vulns) > 5:
+            lines.append(f"  <i>+ ещё {len(vulns) - 5}</i>")
+    else:
+        lines.append("\n✅ <b>Уязвимостей не найдено</b>")
 
     errors = result.get("errors", [])
     if errors:
         lines.append(f"\n❌ <b>Ошибки ({len(errors)}):</b>")
         for e in errors[:3]:
-            lines.append(f"  • {e[:80]}")
+            lines.append(f"  • {escape(_plain(e))}")
 
     warnings = result.get("warnings", [])
     if warnings:
         lines.append(f"\n⚠️ <b>Предупреждения ({len(warnings)}):</b>")
         for w in warnings[:4]:
-            lines.append(f"  • {w[:80]}")
+            lines.append(f"  • {escape(_plain(w))}")
 
     tech = result.get("tech", [])
     if tech:
-        lines.append(f"\n🛠 <b>Технологии:</b> {' | '.join(tech[:5])}")
+        tech_clean = [_plain(t, 30) for t in tech[:6]]
+        lines.append(f"\n🛠 <b>Стек:</b> {' · '.join(tech_clean)}")
 
     seo = result.get("seo", [])
-    if seo:
-        lines.append(f"\n🔍 <b>SEO ({len(seo)} OK):</b>")
-        for s in seo[:3]:
-            lines.append(f"  {s[:80]}")
+    lines.append(f"\n🔍 SEO: <b>{len(seo)}</b> OK · Ошибок: <b>{len(errors)}</b> · Предупреждений: <b>{len(warnings)}</b>")
 
     return "\n".join(lines)
