@@ -4,23 +4,43 @@ from bot.config import CHANNEL_LINK, SUBSCRIPTION_PLANS, USERS_PER_PAGE, PAYMENT
 
 def main_menu_kb(has_sub: bool = False, is_registered: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="🔍 Анализ сайта", callback_data="analyze")],
+        # Анализ
+        [InlineKeyboardButton(text="🔍  Анализ сайта", callback_data="analyze")],
+        # Инструменты
         [
             InlineKeyboardButton(text="🔐 SSL", callback_data="ssl"),
-            InlineKeyboardButton(text="🌐 DNS / IP", callback_data="dns"),
+            InlineKeyboardButton(text="🌐 DNS/IP", callback_data="dns"),
+        ],
+        [
             InlineKeyboardButton(text="🛡 DDoS-защита", callback_data="ddos_check"),
+            InlineKeyboardButton(text="🌍 Гео-IP", callback_data="geoip"),
+        ],
+        [
+            InlineKeyboardButton(text="⏱ Ping", callback_data="ping_tool"),
+            InlineKeyboardButton(text="🔎 Whois", callback_data="whois"),
         ],
     ]
+    # Тест
     if is_registered:
         if has_sub:
-            rows.append([InlineKeyboardButton(text="⚡ Нагрузочный тест — PRO", callback_data="stress_pro")])
-            rows.append([InlineKeyboardButton(text="💥 Flood тест — FLOOD", callback_data="stress_flood")])
+            rows.append([
+                InlineKeyboardButton(text="⚡ PRO-тест", callback_data="stress_pro"),
+                InlineKeyboardButton(text="💥 Flood-тест", callback_data="stress_flood"),
+            ])
         else:
-            rows.append([InlineKeyboardButton(text="⚡ Нагрузочный тест — LITE", callback_data="stress_lite")])
-    rows.append([InlineKeyboardButton(text="📋 История", callback_data="history")])
+            rows.append([InlineKeyboardButton(text="⚡ LITE-тест  (бесплатно)", callback_data="stress_lite")])
+    else:
+        rows.append([InlineKeyboardButton(text="⚡ LITE-тест  (нужна регистрация)", callback_data="need_reg")])
+
     rows.append([
-        InlineKeyboardButton(text="👑 PRO-подписка" if not has_sub else "✅ Подписка активна", callback_data="sub"),
+        InlineKeyboardButton(text="📋 История", callback_data="history"),
         InlineKeyboardButton(text="📊 Статус", callback_data="status"),
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="👑 PRO-подписка" if not has_sub else "✅ Продлить PRO",
+            callback_data="sub"
+        ),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -28,72 +48,48 @@ def main_menu_kb(has_sub: bool = False, is_registered: bool = False) -> InlineKe
 def register_kb(user_id: int, domain: str) -> InlineKeyboardMarkup:
     url = f"https://{domain}/register/{user_id}"
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Пройти регистрацию", url=url)
+        InlineKeyboardButton(text="✅ Зарегистрироваться", url=url)
     ]])
 
 
 def cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+        [InlineKeyboardButton(text="✖️ Отмена", callback_data="cancel")],
     ])
 
 
 def back_to_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu_back")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="menu_back")],
     ])
 
 
 def stress_lite_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡ 60 сек · 100 RPS", callback_data="lite:60:100")],
-        [InlineKeyboardButton(text="🔹 30 сек · 50 RPS",  callback_data="lite:30:50")],
-        [InlineKeyboardButton(text="◀️ Назад",             callback_data="menu_back")],
+        [InlineKeyboardButton(text="⚡ 30 сек  · лёгкий",  callback_data="lite:30:50")],
+        [InlineKeyboardButton(text="⚡ 60 сек  · средний", callback_data="lite:60:100")],
+        [InlineKeyboardButton(text="◀ Назад", callback_data="menu_back")],
     ])
 
 
 def stress_pro_kb() -> InlineKeyboardMarkup:
+    """PRO: user picks only duration. Bot auto-detects everything."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Низкий   — 200 RPS / 60с",   callback_data="pro:60:low")],
-        [InlineKeyboardButton(text="🟡 Средний  — 500 RPS / 120с",  callback_data="pro:120:medium")],
-        [InlineKeyboardButton(text="🔴 Высокий  — 1000 RPS / 180с", callback_data="pro:180:high")],
-        [InlineKeyboardButton(text="💀 Ультра   — 2000 RPS / 300с", callback_data="pro:300:ultra")],
-        [InlineKeyboardButton(text="◀️ Назад",                       callback_data="menu_back")],
+        [InlineKeyboardButton(text="⏱ 1 мин   — умеренный",  callback_data="pro:60")],
+        [InlineKeyboardButton(text="⏱ 2 мин   — средний",    callback_data="pro:120")],
+        [InlineKeyboardButton(text="⏱ 3 мин   — высокий",    callback_data="pro:180")],
+        [InlineKeyboardButton(text="⏱ 5 мин   — максимум",   callback_data="pro:300")],
+        [InlineKeyboardButton(text="◀ Назад", callback_data="menu_back")],
     ])
 
 
 def stress_flood_kb() -> InlineKeyboardMarkup:
+    """FLOOD: user picks only duration."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟡 Средний  — 700 RPS / 60с",   callback_data="flood:60:medium")],
-        [InlineKeyboardButton(text="🔴 Высокий  — 1500 RPS / 120с", callback_data="flood:120:high")],
-        [InlineKeyboardButton(text="💀 Ультра   — 3000 RPS / 180с", callback_data="flood:180:ultra")],
-        [InlineKeyboardButton(text="◀️ Назад",                       callback_data="menu_back")],
-    ])
-
-
-def flood_method_kb(duration: int, intensity: str) -> InlineKeyboardMarkup:
-    """Method selection for flood attacks."""
-    base = f"flood_method:{duration}:{intensity}"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Авто (бот сам выберет)", callback_data=f"{base}:auto")],
-        [InlineKeyboardButton(text="💥 HTTP Flood (GET/POST/HEAD)", callback_data=f"{base}:http_flood")],
-        [InlineKeyboardButton(text="🐢 Slowloris (держит соединения)", callback_data=f"{base}:slowloris")],
-        [InlineKeyboardButton(text="🪛 RUDY (медленный POST)", callback_data=f"{base}:rudy")],
-        [InlineKeyboardButton(text="🚫 Cache Bust (обход CDN)", callback_data=f"{base}:cache_bust")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="stress_flood")],
-    ])
-
-
-def pro_method_kb(duration: int, intensity: str) -> InlineKeyboardMarkup:
-    """Method selection for pro attacks."""
-    base = f"pro_method:{duration}:{intensity}"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Авто (бот сам выберет)", callback_data=f"{base}:auto")],
-        [InlineKeyboardButton(text="💥 HTTP Flood (GET/POST/HEAD)", callback_data=f"{base}:http_flood")],
-        [InlineKeyboardButton(text="🐢 Slowloris (держит соединения)", callback_data=f"{base}:slowloris")],
-        [InlineKeyboardButton(text="🪛 RUDY (медленный POST)", callback_data=f"{base}:rudy")],
-        [InlineKeyboardButton(text="🚫 Cache Bust (обход CDN)", callback_data=f"{base}:cache_bust")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="stress_pro")],
+        [InlineKeyboardButton(text="💥 60 сек  · агрессивный",  callback_data="flood:60")],
+        [InlineKeyboardButton(text="💥 120 сек · экстремальный", callback_data="flood:120")],
+        [InlineKeyboardButton(text="💥 180 сек · максимум",      callback_data="flood:180")],
+        [InlineKeyboardButton(text="◀ Назад", callback_data="menu_back")],
     ])
 
 
@@ -107,17 +103,17 @@ def admin_test_kb() -> InlineKeyboardMarkup:
 def subscription_menu_kb(prices: dict, has_sub: bool, expires: str | None) -> InlineKeyboardMarkup:
     rows = []
     plan_map = {
-        "week":    ("PRO 7 дней",  "⚡"),
-        "month":   ("PRO 30 дней", "💎"),
-        "quarter": ("PRO 90 дней", "👑"),
+        "week":    ("7 дней",  "⚡"),
+        "month":   ("30 дней", "💎"),
+        "quarter": ("90 дней", "👑"),
     }
     for key, (label, emoji) in plan_map.items():
         price = prices.get(key, SUBSCRIPTION_PLANS[key]["price"])
         rows.append([InlineKeyboardButton(
-            text=f"{emoji} {label} — ${price} USDT",
+            text=f"{emoji} PRO {label} — ${price} USDT",
             callback_data=f"plan:{key}",
         )])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_back")])
+    rows.append([InlineKeyboardButton(text="◀ Назад", callback_data="menu_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -125,7 +121,7 @@ def payment_kb(pay_url: str, invoice_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить через CryptoBot", url=pay_url)],
         [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"paychk:{invoice_id}")],
-        [InlineKeyboardButton(text="◀️ Отмена", callback_data="sub")],
+        [InlineKeyboardButton(text="◀ Отмена", callback_data="sub")],
     ])
 
 

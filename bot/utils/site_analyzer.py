@@ -118,7 +118,7 @@ def _check_https(url: str, headers, result: dict) -> None:
 def _check_seo(soup: BeautifulSoup, url: str, result: dict) -> None:
     title = soup.find("title")
     if not title or not title.get_text(strip=True):
-        result["errors"].append("❌ SEO: тег <title> отсутствует")
+        result["errors"].append("❌ SEO: тег &lt;title&gt; отсутствует")
     else:
         t = title.get_text(strip=True)
         tlen = len(t)
@@ -147,9 +147,9 @@ def _check_seo(soup: BeautifulSoup, url: str, result: dict) -> None:
     h3_tags = soup.find_all("h3")
 
     if not h1_tags:
-        result["warnings"].append("⚠️ SEO: тег <h1> отсутствует")
+        result["warnings"].append("⚠️ SEO: тег &lt;h1&gt; отсутствует")
     elif len(h1_tags) > 1:
-        result["warnings"].append(f"⚠️ SEO: найдено {len(h1_tags)} тегов <h1> (рекомендуется один)")
+        result["warnings"].append(f"⚠️ SEO: найдено {len(h1_tags)} тегов &lt;h1&gt; (рекомендуется один)")
     else:
         h1_text = h1_tags[0].get_text(strip=True)
         result["seo"].append(f"✅ H1: «{escape(h1_text[:50])}{'…' if len(h1_text)>50 else ''}»")
@@ -217,7 +217,7 @@ def _check_seo(soup: BeautifulSoup, url: str, result: dict) -> None:
     if lang_tag:
         result["info"].append(f"🌐 Язык страницы: <b>{escape(lang_tag.get('lang', ''))}</b>")
     else:
-        result["warnings"].append("⚠️ Атрибут lang у <html> отсутствует")
+        result["warnings"].append("⚠️ Атрибут lang у &lt;html&gt; отсутствует")
 
 
 def _check_performance(soup: BeautifulSoup, html: str, elapsed_ms: float, headers, result: dict) -> None:
