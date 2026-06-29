@@ -1,309 +1,412 @@
 import json
-from pathlib import Path
+import logging
 from datetime import datetime, date, timedelta
 from typing import Optional
 
-DATA_FILE = Path("bot_data.json")
+from bot.db import get_session
+from bot.models import (
+    User, History, PendingInvoice, Payment, Setting, AdminLog, Report
+)
 
+logger = logging.getLogger(__name__)
 
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+DEFAULT_PRICES = {"week": 2.99, "month": 7.99, "quarter": 19.99}
+DEFAULT_FREE_LIMIT = 3
 
 
 def _today() -> str:
     return date.today().isoformat()
 
 
+def _now() -> datetime:
+    return datetime.utcnow()
+
+
 class Storage:
-    def __init__(self):
-        self._data = self._load()
-        self._ensure_defaults()
+    def _get_setting(self, key: str, default=None):
+        with get_session() as session:
+            s = session.query(Setting).filter_by(key=key).first()
+            return s.value if s else default
 
-    def _load(self) -> dict:
-        if DATA_FILE.exists():
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def _ensure_defaults(self):
-        # migrate old list-of-IDs format → dict format
-        if isinstance(self._data.get("users"), list):
-            old_ids = self._data["users"]
-            self._data["users"] = {str(uid): self._default_user() for uid in old_ids}
-
-        self._data.setdefault("users", {})
-        self._data.setdefault("history", {})
-        self._data.setdefault("pending_invoices", [])
-        self._data.setdefault("payments", [])
-        self._data.setdefault("total_analyses", 0)
-        self._data.setdefault("settings", {
-            "banner_file_id": None,
-            "prices": {"week": 2.99, "month": 7.99, "quarter": 19.99},
-            "free_limit": 3,
-        })
-        self._save()
-
-    def _save(self):
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
+    def _set_setting(self, key: str, value: str):
+        with get_session() as session:
+            s = session.query(Setting).filter_by(key=key).first()
+            if s:
+                s.value = value
+            else:
+                session.add(Setting(key=key, value=value))
 
     # ─── Users ────────────────────────────────────────────────────────────────
 
-    def _default_user(self) -> dict:
-        return {
-            "first_name": "",
-            "username": None,
-            "first_seen": _now(),
-            "last_active": _now(),
-            "banned": False,
-            "sub_expires": None,
-            "sub_plan": None,
-            "free_uses_today": 0,
-            "free_uses_date": "",
-            "total_analyses": 0,
-        }
-
-    def get_user(self, user_id: int) -> dict:
-        return self._data["users"].get(str(user_id), self._default_user())
-
     def upsert_user(self, user_id: int, first_name: str, username: Optional[str]):
-        key = str(user_id)
-        if key not in self._data["users"]:
-            self._data["users"][key] = self._default_user()
-        self._data["users"][key]["first_name"] = first_name
-        self._data["users"][key]["username"] = username
-        self._data["users"][key]["last_active"] = _now()
-        self._save()
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u:
+                u = User(telegram_id=user_id, first_name=first_name, username=username)
+                session.add(u)
+            else:
+                u.first_name = first_name
+                u.username = username
+                u.last_active = _now()
 
     def touch_user(self, user_id: int):
-        key = str(user_id)
-        if key in self._data["users"]:
-            self._data["users"][key]["last_active"] = _now()
-            self._save()
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if u:
+                u.last_active = _now()
 
-    def get_all_user_ids(self) -> list[int]:
-        return [int(k) for k in self._data["users"]]
+    def get_user(self, user_id: int) -> Optional[dict]:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u:
+                return None
+            return self._user_to_dict(u)
+
+    def _user_to_dict(self, u: User) -> dict:
+        return {
+            "id": u.telegram_id,
+            "first_name": u.first_name or "",
+            "username": u.username,
+            "ip_address": u.ip_address,
+            "first_seen": u.first_seen.isoformat() if u.first_seen else None,
+            "last_active": u.last_active.isoformat() if u.last_active else None,
+            "tier": u.tier or "lite",
+            "banned": u.banned,
+            "web_registered": u.web_registered,
+            "sub_expires": u.subscription_until.isoformat() if u.subscription_until else None,
+            "sub_plan": u.sub_plan,
+            "free_uses_today": u.free_uses_today,
+            "free_uses_date": u.free_uses_date or "",
+            "total_analyses": u.total_analyses,
+        }
 
     def get_all_users_list(self) -> list[dict]:
-        result = []
-        for uid, u in self._data["users"].items():
-            result.append({"id": int(uid), **u})
-        result.sort(key=lambda x: x.get("last_active", ""), reverse=True)
-        return result
+        with get_session() as session:
+            users = session.query(User).order_by(User.last_active.desc()).all()
+            return [self._user_to_dict(u) for u in users]
+
+    def get_all_user_ids(self) -> list[int]:
+        with get_session() as session:
+            rows = session.query(User.telegram_id).filter_by(banned=False).all()
+            return [r[0] for r in rows]
 
     def total_users(self) -> int:
-        return len(self._data["users"])
+        with get_session() as session:
+            return session.query(User).count()
 
     # ─── Ban ──────────────────────────────────────────────────────────────────
 
     def is_banned(self, user_id: int) -> bool:
-        return self.get_user(user_id).get("banned", False)
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            return bool(u and u.banned)
 
     def ban_user(self, user_id: int):
-        key = str(user_id)
-        if key in self._data["users"]:
-            self._data["users"][key]["banned"] = True
-            self._save()
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if u:
+                u.banned = True
 
     def unban_user(self, user_id: int):
-        key = str(user_id)
-        if key in self._data["users"]:
-            self._data["users"][key]["banned"] = False
-            self._save()
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if u:
+                u.banned = False
 
     def banned_count(self) -> int:
-        return sum(1 for u in self._data["users"].values() if u.get("banned"))
+        with get_session() as session:
+            return session.query(User).filter_by(banned=True).count()
+
+    # ─── Registration ─────────────────────────────────────────────────────────
+
+    def is_web_registered(self, user_id: int) -> bool:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            return bool(u and u.web_registered)
+
+    def complete_web_registration(self, user_id: int, ip_address: str):
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if u:
+                u.web_registered = True
+                u.ip_address = ip_address
+                u.registration_date = _now()
 
     # ─── Subscription ─────────────────────────────────────────────────────────
 
     def has_active_sub(self, user_id: int) -> bool:
-        u = self.get_user(user_id)
-        exp = u.get("sub_expires")
-        if not exp:
-            return False
-        try:
-            return datetime.fromisoformat(exp) > datetime.now()
-        except Exception:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u or not u.subscription_until:
+                return False
+            return u.subscription_until > datetime.utcnow()
+
+    def is_pro(self, user_id: int) -> bool:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u:
+                return False
+            if u.tier == "pro" and u.subscription_until and u.subscription_until > datetime.utcnow():
+                return True
             return False
 
     def sub_expires_str(self, user_id: int) -> Optional[str]:
-        u = self.get_user(user_id)
-        exp = u.get("sub_expires")
-        if not exp:
-            return None
-        try:
-            dt = datetime.fromisoformat(exp)
-            return dt.strftime("%d.%m.%Y")
-        except Exception:
-            return None
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u or not u.subscription_until:
+                return None
+            return u.subscription_until.strftime("%d.%m.%Y")
 
     def activate_subscription(self, user_id: int, plan: str, days: int):
-        key = str(user_id)
-        if key not in self._data["users"]:
-            self._data["users"][key] = self._default_user()
-        u = self._data["users"][key]
-        existing = u.get("sub_expires")
-        if existing:
-            try:
-                base = max(datetime.fromisoformat(existing), datetime.now())
-            except Exception:
-                base = datetime.now()
-        else:
-            base = datetime.now()
-        new_exp = base + timedelta(days=days)
-        u["sub_expires"] = new_exp.isoformat(timespec="seconds")
-        u["sub_plan"] = plan
-        self._save()
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u:
+                u = User(telegram_id=user_id)
+                session.add(u)
+            existing = u.subscription_until
+            if existing and existing > datetime.utcnow():
+                base = existing
+            else:
+                base = datetime.utcnow()
+            u.subscription_until = base + timedelta(days=days)
+            u.sub_plan = plan
+            u.tier = "pro"
 
     def subscribed_count(self) -> int:
-        now = datetime.now()
-        count = 0
-        for u in self._data["users"].values():
-            exp = u.get("sub_expires")
-            if exp:
-                try:
-                    if datetime.fromisoformat(exp) > now:
-                        count += 1
-                except Exception:
-                    pass
-        return count
+        with get_session() as session:
+            return (
+                session.query(User)
+                .filter(User.subscription_until > datetime.utcnow())
+                .count()
+            )
+
+    def manually_grant_subscription(self, user_id: int, plan: str, days: int):
+        self.activate_subscription(user_id, plan, days)
 
     # ─── Free uses ────────────────────────────────────────────────────────────
 
+    def get_free_limit(self) -> int:
+        v = self._get_setting("free_limit")
+        return int(v) if v else DEFAULT_FREE_LIMIT
+
+    def set_free_limit(self, limit: int):
+        self._set_setting("free_limit", str(limit))
+
     def get_free_uses_today(self, user_id: int) -> int:
-        u = self.get_user(user_id)
-        if u.get("free_uses_date") != _today():
-            return 0
-        return u.get("free_uses_today", 0)
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u or u.free_uses_date != _today():
+                return 0
+            return u.free_uses_today
 
     def use_free_analysis(self, user_id: int):
-        key = str(user_id)
-        if key not in self._data["users"]:
-            self._data["users"][key] = self._default_user()
-        u = self._data["users"][key]
-        if u.get("free_uses_date") != _today():
-            u["free_uses_today"] = 0
-            u["free_uses_date"] = _today()
-        u["free_uses_today"] = u.get("free_uses_today", 0) + 1
-        self._save()
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u:
+                return
+            if u.free_uses_date != _today():
+                u.free_uses_today = 0
+                u.free_uses_date = _today()
+            u.free_uses_today = (u.free_uses_today or 0) + 1
+            u.total_analyses = (u.total_analyses or 0) + 1
 
     def can_analyze(self, user_id: int) -> bool:
         if self.has_active_sub(user_id):
             return True
-        limit = self._data["settings"].get("free_limit", 3)
+        limit = self.get_free_limit()
         return self.get_free_uses_today(user_id) < limit
 
     def free_left(self, user_id: int) -> int:
-        limit = self._data["settings"].get("free_limit", 3)
-        used = self.get_free_uses_today(user_id)
-        return max(0, limit - used)
-
-    # ─── Analyses ─────────────────────────────────────────────────────────────
+        limit = self.get_free_limit()
+        return max(0, limit - self.get_free_uses_today(user_id))
 
     def record_analysis(self, user_id: int):
-        self._data["total_analyses"] += 1
-        key = str(user_id)
-        if key in self._data["users"]:
-            self._data["users"][key]["total_analyses"] = (
-                self._data["users"][key].get("total_analyses", 0) + 1
-            )
-        self._save()
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if u:
+                u.total_analyses = (u.total_analyses or 0) + 1
 
     def total_analyses(self) -> int:
-        return self._data.get("total_analyses", 0)
+        with get_session() as session:
+            from sqlalchemy import func
+            result = session.query(func.sum(User.total_analyses)).scalar()
+            return int(result or 0)
 
     # ─── History ──────────────────────────────────────────────────────────────
 
-    def add_history(self, user_id: int, url: str, score: int):
-        key = str(user_id)
-        self._data["history"].setdefault(key, [])
-        self._data["history"][key].insert(0, {
-            "url": url,
-            "score": score,
-            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
-        })
-        self._data["history"][key] = self._data["history"][key][:10]
-        self._save()
+    def add_history(self, user_id: int, url: str, score: int, report_id: str = None):
+        with get_session() as session:
+            h = History(
+                user_id=user_id,
+                target_url=url,
+                test_type="analysis",
+                score=score,
+                report_id=report_id,
+            )
+            session.add(h)
 
     def get_history(self, user_id: int) -> list[dict]:
-        return self._data.get("history", {}).get(str(user_id), [])
+        with get_session() as session:
+            rows = (
+                session.query(History)
+                .filter_by(user_id=user_id)
+                .order_by(History.start_time.desc())
+                .limit(10)
+                .all()
+            )
+            return [
+                {
+                    "url": h.target_url,
+                    "score": h.score,
+                    "date": h.start_time.strftime("%d.%m.%Y %H:%M") if h.start_time else "",
+                    "report_id": h.report_id,
+                }
+                for h in rows
+            ]
+
+    def add_test_history(self, user_id: int, url: str, report_id: str, rps: float, success_rate: float, p95: float, p99: float):
+        with get_session() as session:
+            h = History(
+                user_id=user_id,
+                target_url=url,
+                test_type="load_test",
+                report_id=report_id,
+                rps=rps,
+                success_rate=success_rate,
+                p95=p95,
+                p99=p99,
+                end_time=datetime.utcnow(),
+            )
+            session.add(h)
 
     # ─── Pending invoices ─────────────────────────────────────────────────────
 
     def add_pending_invoice(self, invoice_id: int, user_id: int, plan: str):
-        self._data["pending_invoices"].append({
-            "invoice_id": invoice_id,
-            "user_id": user_id,
-            "plan": plan,
-            "created_at": _now(),
-        })
-        self._save()
+        with get_session() as session:
+            inv = PendingInvoice(invoice_id=invoice_id, user_id=user_id, plan=plan)
+            session.add(inv)
 
     def remove_pending_invoice(self, invoice_id: int):
-        self._data["pending_invoices"] = [
-            inv for inv in self._data["pending_invoices"]
-            if inv["invoice_id"] != invoice_id
-        ]
-        self._save()
+        with get_session() as session:
+            inv = session.query(PendingInvoice).filter_by(invoice_id=invoice_id).first()
+            if inv:
+                session.delete(inv)
 
     def get_pending_invoices(self) -> list[dict]:
-        return list(self._data.get("pending_invoices", []))
+        with get_session() as session:
+            rows = session.query(PendingInvoice).all()
+            return [
+                {"invoice_id": r.invoice_id, "user_id": r.user_id, "plan": r.plan}
+                for r in rows
+            ]
 
     # ─── Payments ─────────────────────────────────────────────────────────────
 
     def add_payment(self, user_id: int, plan: str, amount: float, currency: str):
-        self._data["payments"].insert(0, {
-            "user_id": user_id,
-            "plan": plan,
-            "amount": amount,
-            "currency": currency,
-            "paid_at": _now(),
-        })
-        self._save()
+        with get_session() as session:
+            p = Payment(user_id=user_id, plan=plan, amount=amount, currency=currency)
+            session.add(p)
 
     def get_payments(self) -> list[dict]:
-        return list(self._data.get("payments", []))
+        with get_session() as session:
+            rows = session.query(Payment).order_by(Payment.paid_at.desc()).all()
+            return [
+                {
+                    "user_id": r.user_id,
+                    "plan": r.plan,
+                    "amount": r.amount,
+                    "currency": r.currency,
+                    "paid_at": r.paid_at.isoformat() if r.paid_at else "",
+                }
+                for r in rows
+            ]
 
     def total_revenue(self) -> float:
-        return sum(p.get("amount", 0) for p in self._data.get("payments", []))
+        with get_session() as session:
+            from sqlalchemy import func
+            result = session.query(func.sum(Payment.amount)).scalar()
+            return float(result or 0)
 
-    # ─── Settings ─────────────────────────────────────────────────────────────
-
-    def get_settings(self) -> dict:
-        return self._data.get("settings", {})
-
-    def set_banner(self, file_id: Optional[str]):
-        self._data["settings"]["banner_file_id"] = file_id
-        self._save()
-
-    def get_banner(self) -> Optional[str]:
-        return self._data["settings"].get("banner_file_id")
-
-    def set_price(self, plan: str, price: float):
-        self._data["settings"]["prices"][plan] = price
-        self._save()
+    # ─── Prices ───────────────────────────────────────────────────────────────
 
     def get_prices(self) -> dict:
-        return self._data["settings"].get("prices", {"week": 2.99, "month": 7.99, "quarter": 19.99})
+        v = self._get_setting("prices")
+        if v:
+            try:
+                return json.loads(v)
+            except Exception:
+                pass
+        return DEFAULT_PRICES.copy()
 
-    def set_free_limit(self, limit: int):
-        self._data["settings"]["free_limit"] = limit
-        self._save()
+    def set_price(self, plan: str, price: float):
+        prices = self.get_prices()
+        prices[plan] = price
+        self._set_setting("prices", json.dumps(prices))
 
-    def get_free_limit(self) -> int:
-        return self._data["settings"].get("free_limit", 3)
+    # ─── Banner ───────────────────────────────────────────────────────────────
 
-    # ─── Today stats ──────────────────────────────────────────────────────────
+    def get_banner(self) -> Optional[str]:
+        return self._get_setting("banner_file_id")
+
+    def set_banner(self, file_id: Optional[str]):
+        self._set_setting("banner_file_id", file_id or "")
+
+    def get_settings(self) -> dict:
+        return {
+            "prices": self.get_prices(),
+            "free_limit": self.get_free_limit(),
+            "banner_file_id": self.get_banner(),
+        }
+
+    # ─── Stats ────────────────────────────────────────────────────────────────
 
     def new_users_today(self) -> int:
-        today = _today()
-        return sum(
-            1 for u in self._data["users"].values()
-            if u.get("first_seen", "")[:10] == today
-        )
+        today = date.today()
+        with get_session() as session:
+            return (
+                session.query(User)
+                .filter(User.first_seen >= datetime(today.year, today.month, today.day))
+                .count()
+            )
+
+    # ─── Admin log ────────────────────────────────────────────────────────────
+
+    def log_admin_action(self, admin_id: int, action: str):
+        with get_session() as session:
+            session.add(AdminLog(admin_id=admin_id, action=action))
+
+    def get_admin_logs(self, limit: int = 50) -> list[dict]:
+        with get_session() as session:
+            rows = (
+                session.query(AdminLog)
+                .order_by(AdminLog.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "admin_id": r.admin_id,
+                    "action": r.action,
+                    "timestamp": r.timestamp.strftime("%d.%m %H:%M") if r.timestamp else "",
+                }
+                for r in rows
+            ]
+
+    # ─── Reports ──────────────────────────────────────────────────────────────
+
+    def get_report(self, report_id: str) -> Optional[dict]:
+        with get_session() as session:
+            r = session.query(Report).filter_by(report_id=report_id).first()
+            if not r:
+                return None
+            return {
+                "report_id": r.report_id,
+                "user_id": r.user_id,
+                "report_type": r.report_type,
+                "target_url": r.target_url,
+                "data": r.data,
+                "created_at": r.created_at.strftime("%d.%m.%Y %H:%M") if r.created_at else "",
+            }
 
 
 storage = Storage()

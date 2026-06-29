@@ -1,711 +1,510 @@
-import asyncio
-import random
-import validators
-from html import escape
+import logging
+import os
+import uuid
+from io import BytesIO
 
-from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram import F, Router
+from aiogram.enums import ParseMode
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from bot.config import CHANNEL_USERNAME, ADMIN_ID
+from bot.config import ADMIN_ID, DOMAIN, SUBSCRIPTION_PLANS
 from bot.keyboards import (
-    subscribe_kb, main_menu_kb, back_to_menu_kb, cancel_kb,
-    stress_start_kb,
+    back_to_menu_kb, cancel_kb, main_menu_kb,
+    register_kb, stress_lite_kb, stress_pro_kb, subscription_menu_kb,
 )
-from bot.utils.site_analyzer import analyze_site, format_report, _calc_score
-from bot.utils.stress_test import (
-    run_stress_test, format_stress_report,
-    scan_ports, _parse_target, run_tcp_flood, run_http_flood,
-    SCAN_PORTS,
-)
-from bot.utils.ssl_checker import check_ssl, format_ssl_report
-from bot.utils.dns_checker import dns_lookup, check_ports, COMMON_PORTS, format_dns_report
-from bot.utils.ddos_checker import check_ddos_protection, format_ddos_report
-from bot.utils.helpers import safe_edit
 from bot.storage import storage
+from bot.utils.url_validator import validate_target_url
+from bot.utils.site_analyzer import analyze_site
+from bot.utils.ssl_checker import check_ssl, format_ssl_report
+from bot.utils.dns_checker import dns_lookup, check_ports, format_dns_report
+from bot.utils.ddos_checker import check_ddos_protection, format_ddos_report
+from bot.utils.script_generator import generate_lite_script
+from bot.utils.traffic_worker import enqueue_task
+from bot.db import get_session
+from bot.models import Report, Setting
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 
-class UserState(StatesGroup):
+class UserStates(StatesGroup):
     waiting_for_url = State()
-    stress_waiting_url = State()
-    stress_choosing_intensity = State()
     ssl_waiting_url = State()
     dns_waiting_url = State()
-    ddos_waiting_ip = State()
+    stress_waiting_url = State()
+    stress_pro_waiting_url = State()
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-async def check_subscription(bot: Bot, user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
-        return member.status not in ("left", "kicked", "banned")
-    except Exception:
-        return False
-
-
-def _split_text(text: str, limit: int = 4000) -> list[str]:
-    lines = text.split("\n")
-    parts, current = [], ""
-    for line in lines:
-        if len(current) + len(line) + 1 > limit:
-            parts.append(current)
-            current = line
-        else:
-            current += ("\n" if current else "") + line
-    if current:
-        parts.append(current)
-    return parts
+def _report_url(report_id: str) -> str:
+    return f"https://{DOMAIN}/report/{report_id}"
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
 
-@router.message(CommandStart())
-async def cmd_start(message: Message, bot: Bot):
-    user_id = message.from_user.id
-
-    if storage.is_banned(user_id):
-        await message.answer("🚫 Ты заблокирован в этом боте.", reply_markup=ReplyKeyboardRemove())
-        return
-
-    storage.upsert_user(user_id, message.from_user.first_name, message.from_user.username)
-    is_subscribed = await check_subscription(bot, user_id)
-    first_name = escape(message.from_user.first_name)
-
-    if not is_subscribed:
-        await message.answer(
-            f"👋 Привет, <b>{first_name}</b>!\n\n"
-            "Для использования бота подпишись на наш канал 📢\n\n"
-            "После подписки нажми <b>«✅ Проверить подписку»</b>",
-            reply_markup=subscribe_kb(),
-        )
-        return
-
-    has_sub = storage.has_active_sub(user_id)
-    banner = storage.get_banner()
-    welcome_text = (
-        f"Привет, <b>{first_name}</b> 👋\n\n"
-        "Скинь ссылку на сайт — покажу что там за SEO, безопасность, технологии и скорость.\n\n"
-        "Или запусти стресс-тест чтобы проверить как сайт держит нагрузку 🔥"
-    )
-    kb = main_menu_kb(has_sub)
-    if banner:
-        await message.answer_photo(photo=banner, caption=welcome_text, reply_markup=kb)
-    else:
-        await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
-        await message.answer("👇 Главное меню:", reply_markup=kb)
-
-
-# ─── Channel subscription check ───────────────────────────────────────────────
-
-@router.callback_query(F.data == "checksub")
-async def cb_check_subscription(callback: CallbackQuery, bot: Bot):
-    user_id = callback.from_user.id
-    is_subscribed = await check_subscription(bot, user_id)
-    if is_subscribed:
-        has_sub = storage.has_active_sub(user_id)
-        await safe_edit(
-            callback,
-            "✅ <b>Подписка подтверждена!</b>\n\n"
-            "Нажми кнопку ниже чтобы начать 👇",
-            reply_markup=main_menu_kb(has_sub),
-        )
-    else:
-        await callback.answer(
-            "❌ Ты ещё не подписался на канал!\nПодпишись и нажми кнопку снова.",
-            show_alert=True,
-        )
-
-
-# ─── Main menu / cancel ───────────────────────────────────────────────────────
-
-@router.callback_query(F.data == "menu")
-async def cb_menu(callback: CallbackQuery, state: FSMContext):
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    has_sub = storage.has_active_sub(callback.from_user.id)
-    await safe_edit(callback, "👇 Главное меню:", reply_markup=main_menu_kb(has_sub))
-    await callback.answer()
+    uid = message.from_user.id
+
+    if storage.is_banned(uid):
+        await message.answer("🚫 Вы заблокированы.")
+        return
+
+    storage.upsert_user(uid, message.from_user.first_name, message.from_user.username)
+    is_registered = storage.is_web_registered(uid)
+    is_pro = storage.is_pro(uid)
+
+    banner = storage.get_banner()
+    greeting = (
+        f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
+        f"⚡ <b>LoadTest Pro</b> — профессиональный инструмент нагрузочного тестирования.\n\n"
+    )
+
+    if not is_registered:
+        greeting += (
+            "📋 <b>Для начала пройдите веб-регистрацию</b> — нажмите кнопку ниже.\n"
+            "Это займёт одну секунду."
+        )
+        kb = register_kb(uid, DOMAIN)
+    else:
+        tier = "PRO 💎" if is_pro else "LITE 🔧"
+        greeting += f"Ваш тариф: <b>{tier}</b>\n\nВыберите действие:"
+        kb = main_menu_kb(has_sub=is_pro, is_registered=True)
+
+    if banner:
+        await message.answer_photo(photo=banner, caption=greeting, parse_mode=ParseMode.HTML, reply_markup=kb)
+    else:
+        await message.answer(greeting, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+@router.message(Command("register"))
+async def cmd_register(message: Message):
+    uid = message.from_user.id
+    if storage.is_web_registered(uid):
+        await message.answer("✅ Вы уже зарегистрированы. Используйте /start")
+        return
+    await message.answer(
+        "🔗 Нажмите кнопку ниже для регистрации:",
+        reply_markup=register_kb(uid, DOMAIN)
+    )
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    await show_status(message.from_user.id, message)
+
+
+@router.callback_query(F.data == "status")
+async def cb_status(cb: CallbackQuery):
+    await cb.answer()
+    await show_status(cb.from_user.id, cb.message)
+
+
+async def show_status(uid: int, target):
+    is_pro = storage.is_pro(uid)
+    is_reg = storage.is_web_registered(uid)
+    user = storage.get_user(uid)
+
+    tier_line = "💎 <b>PRO</b>" if is_pro else "🔧 <b>LITE</b>"
+    expires = storage.sub_expires_str(uid)
+    exp_line = f"\n📅 Подписка до: <b>{expires}</b>" if expires and is_pro else ""
+    reg_line = "✅ Зарегистрирован" if is_reg else "❌ Не зарегистрирован"
+    free_left = storage.free_left(uid) if not is_pro else "∞"
+    analyses = (user or {}).get("total_analyses", 0)
+
+    text = (
+        f"👤 <b>Ваш статус</b>\n\n"
+        f"🏷 Тариф: {tier_line}{exp_line}\n"
+        f"🌐 Регистрация: {reg_line}\n"
+        f"🆓 Бесплатных сегодня: <b>{free_left}</b>\n"
+        f"📊 Всего проверок: <b>{analyses}</b>"
+    )
+    await target.answer(text, parse_mode=ParseMode.HTML,
+                        reply_markup=back_to_menu_kb(is_pro, is_reg))
+
+
+# ─── Menu navigation ──────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.in_({"menu", "main_menu"}))
+async def cb_menu(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    uid = cb.from_user.id
+    is_pro = storage.is_pro(uid)
+    is_reg = storage.is_web_registered(uid)
+    await cb.message.answer("📋 Главное меню:", reply_markup=main_menu_kb(is_pro, is_reg))
+    await cb.answer()
 
 
 @router.callback_query(F.data == "cancel")
-async def cb_cancel(callback: CallbackQuery, state: FSMContext):
+async def cb_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    has_sub = storage.has_active_sub(callback.from_user.id)
-    await safe_edit(callback, "↩️ Отменено. Главное меню:", reply_markup=main_menu_kb(has_sub))
-    await callback.answer()
+    await cb.answer("Отменено")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "noop")
-async def cb_noop(callback: CallbackQuery):
-    await callback.answer()
+async def cb_noop(cb: CallbackQuery):
+    await cb.answer()
 
 
-# ─── Analyze site ─────────────────────────────────────────────────────────────
+# ─── Site analysis ────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "analyze")
-async def cb_analyze(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    user_id = callback.from_user.id
-
-    is_subscribed = await check_subscription(bot, user_id)
-    if not is_subscribed:
-        await safe_edit(callback, "❌ Для использования бота нужно подписаться на канал.", reply_markup=subscribe_kb())
-        await callback.answer()
-        return
-
-    if not storage.can_analyze(user_id):
+async def cb_analyze(cb: CallbackQuery, state: FSMContext):
+    uid = cb.from_user.id
+    if not storage.can_analyze(uid):
         limit = storage.get_free_limit()
-        await safe_edit(
-            callback,
-            f"⚠️ <b>Исчерпан дневной лимит ({limit}/день)</b>\n\n"
-            "Оформи подписку для безлимитного использования 💎",
-            reply_markup=main_menu_kb(False),
+        await cb.answer(
+            f"⛔ Лимит исчерпан ({limit} бесплатных/день). Подключите PRO!",
+            show_alert=True
         )
-        await callback.answer()
         return
-
-    await state.set_state(UserState.waiting_for_url)
-    await safe_edit(
-        callback,
-        "🔗 <b>Введи ссылку на сайт</b>\n\nПример: <code>https://example.com</code>",
-        reply_markup=cancel_kb(),
+    await state.set_state(UserStates.waiting_for_url)
+    await cb.message.answer(
+        "🔍 Отправьте URL сайта для анализа:\n\n<code>https://example.com</code>",
+        parse_mode=ParseMode.HTML, reply_markup=cancel_kb()
     )
-    await callback.answer()
+    await cb.answer()
 
 
-@router.message(UserState.waiting_for_url)
-async def process_url(message: Message, state: FSMContext, bot: Bot):
-    url = (message.text or "").strip()
-    user_id = message.from_user.id
-    storage.touch_user(user_id)
-
-    if not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
-
-    if not validators.url(url):
-        await message.answer(
-            "❌ Некорректная ссылка.\nПример: <code>https://example.com</code>",
-            reply_markup=cancel_kb(),
-        )
-        return
-
-    is_subscribed = await check_subscription(bot, user_id)
-    if not is_subscribed:
-        await state.clear()
-        await message.answer("❌ Ты отписался от канала!", reply_markup=subscribe_kb())
-        return
-
-    if not storage.can_analyze(user_id):
-        await state.clear()
-        limit = storage.get_free_limit()
-        await message.answer(
-            f"⚠️ Исчерпан лимит: {limit} анализов в день\n\nОформи подписку 💎",
-            reply_markup=main_menu_kb(storage.has_active_sub(user_id)),
-        )
-        return
-
+@router.message(UserStates.waiting_for_url)
+async def handle_analyze_url(message: Message, state: FSMContext):
     await state.clear()
-    await _run_analysis(message, url, bot)
+    uid = message.from_user.id
+    url = message.text.strip()
 
-
-async def _run_analysis(message: Message, url: str, bot: Bot):
-    user_id = message.from_user.id
-    has_sub = storage.has_active_sub(user_id)
-
-    processing = await message.answer(
-        "⏳ <b>Анализирую сайт…</b>\n\nПроверяю SEO, безопасность, производительность и технологии 🔍"
-    )
-
-    data = await analyze_site(url)
-    score, _ = _calc_score(data)
-    report = format_report(data)
-
-    if not has_sub:
-        storage.use_free_analysis(user_id)
-    storage.record_analysis(user_id)
-    storage.add_history(user_id, url, score)
-
-    await processing.delete()
-
-    kb = back_to_menu_kb(storage.has_active_sub(user_id))
-    chunks = _split_text(report)
-    for i, chunk in enumerate(chunks):
-        await message.answer(chunk, parse_mode="HTML", reply_markup=kb if i == len(chunks) - 1 else None)
-
-
-# ─── History ──────────────────────────────────────────────────────────────────
-
-@router.callback_query(F.data == "history")
-async def cb_history(callback: CallbackQuery):
-    history = storage.get_history(callback.from_user.id)
-    has_sub = storage.has_active_sub(callback.from_user.id)
-
-    if not history:
-        await safe_edit(
-            callback,
-            "📋 <b>История пуста</b>\n\nАнализируй сайты — они появятся здесь.",
-            reply_markup=main_menu_kb(has_sub),
-        )
-        await callback.answer()
+    ok, url_or_err = validate_target_url(url)
+    if not ok:
+        await message.answer(f"❌ {url_or_err}", reply_markup=cancel_kb())
         return
 
-    lines = ["📋 <b>Последние анализы:</b>\n"]
-    for i, entry in enumerate(history, 1):
-        score = entry.get("score", 0)
-        em = "🟢" if score >= 85 else "🟡" if score >= 65 else "🟠" if score >= 45 else "🔴"
-        lines.append(f"{i}. {em} <code>{escape(entry['url'])}</code>")
-        lines.append(f"   <b>{score}/100</b> • {entry['date']}")
+    if not storage.can_analyze(uid):
+        await message.answer("⛔ Лимит анализов на сегодня исчерпан. Подключите PRO!")
+        return
 
-    await safe_edit(callback, "\n".join(lines), reply_markup=main_menu_kb(has_sub))
-    await callback.answer()
+    msg = await message.answer("🔍 Анализирую сайт...")
+    try:
+        result = await analyze_site(url_or_err)
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка анализа: {e}")
+        return
 
+    if not storage.is_pro(uid):
+        storage.use_free_analysis(uid)
+    else:
+        storage.record_analysis(uid)
 
-# ─── Help ─────────────────────────────────────────────────────────────────────
+    report_id = str(uuid.uuid4())
+    data = dict(result)
+    data["target_url"] = url_or_err
 
-@router.callback_query(F.data == "help")
-async def cb_help(callback: CallbackQuery):
-    has_sub = storage.has_active_sub(callback.from_user.id)
-    limit = storage.get_free_limit()
-    await safe_edit(
-        callback,
-        "📖 <b>Возможности бота:</b>\n\n"
-        "<b>🔍 Анализ сайта:</b>\n"
-        "• SEO: title, description, h1, OG, Twitter Card\n"
-        "• Безопасность: 6 HTTP-заголовков\n"
-        "• Производительность: скорость, скрипты, размер\n"
-        "• Технологии: CMS, фреймворки, сервер\n"
-        "• Аналитика: GA, GTM, Яндекс.Метрика\n"
-        "• robots.txt, sitemap.xml, favicon, HTTPS\n\n"
-        "<b>🔐 SSL-сертификат:</b>\n"
-        "• Срок действия, кому выдан, кем подписан\n"
-        "• Протокол (TLS 1.2/1.3), шифр\n"
-        "• Все домены (SAN)\n\n"
-        "<b>🌐 DNS / IP:</b>\n"
-        "• IP-адреса, страна, хостинг, ASN\n"
-        "• Сканирование открытых портов\n\n"
-        "<b>🛡️ Проверка DDoS-защиты:</b>\n"
-        "• Введи свой публичный IP-адрес\n"
-        "• Бот проверит, реально ли провайдер\n"
-        "  защищает тебя от DDoS-атак\n"
-        "• Полезно если провайдер обещал защиту,\n"
-        "  а интернет всё равно падает\n\n"
-        "<b>🔥 Стресс-тест:</b>\n"
-        "• До 10 000 запросов / 500 потоков\n"
-        "• RPS, P50/P95/P99, статусы, ошибки\n\n"
-        f"🆓 Бесплатно: <b>{limit} анализов/день</b>\n"
-        "💎 Подписка: безлимитно + стресс-тест\n\n"
-        "По вопросам: @hayder_projectx",
-        reply_markup=main_menu_kb(has_sub),
+    with get_session() as session:
+        session.add(Report(
+            report_id=report_id,
+            user_id=uid,
+            report_type="analysis",
+            target_url=url_or_err,
+            data=data,
+        ))
+
+    score = result.get("score", 0)
+    storage.add_history(uid, url_or_err, score, report_id)
+
+    rurl = _report_url(report_id)
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Открыть отчёт", url=rurl)],
+        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="menu")],
+    ])
+
+    await msg.edit_text(
+        f"✅ <b>Анализ завершён</b>\n\n"
+        f"🌐 <code>{url_or_err}</code>\n"
+        f"⭐ Балл: <b>{score}/100</b>\n\n"
+        f"🔗 <a href='{rurl}'>Открыть полный отчёт</a>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb,
+        disable_web_page_preview=False,
     )
-    await callback.answer()
 
 
-# ─── SSL checker ──────────────────────────────────────────────────────────────
+# ─── SSL ─────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "ssl")
-async def cb_ssl(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(UserState.ssl_waiting_url)
-    await safe_edit(
-        callback,
-        "🔐 <b>Проверка SSL-сертификата</b>\n\n"
-        "Отправь домен или ссылку:\n"
-        "<code>example.com</code> или <code>https://example.com</code>",
-        reply_markup=cancel_kb(),
-    )
-    await callback.answer()
+async def cb_ssl(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(UserStates.ssl_waiting_url)
+    await cb.message.answer("🔐 Отправьте домен для проверки SSL:", reply_markup=cancel_kb())
+    await cb.answer()
 
 
-@router.message(UserState.ssl_waiting_url)
-async def process_ssl_url(message: Message, state: FSMContext):
-    raw = (message.text or "").strip()
-    hostname = raw.removeprefix("https://").removeprefix("http://").split("/")[0].split("?")[0]
-
-    if not hostname or "." not in hostname:
-        await message.answer("❌ Введи корректный домен, например: <code>example.com</code>", reply_markup=cancel_kb())
-        return
-
+@router.message(UserStates.ssl_waiting_url)
+async def handle_ssl_url(message: Message, state: FSMContext):
+    data = await state.get_data()
     await state.clear()
-    wait = await message.answer(f"🔐 Проверяю SSL для <code>{escape(hostname)}</code>…")
-    data = await check_ssl(hostname)
-    await wait.delete()
-    report = format_ssl_report(hostname, data)
-    has_sub = storage.has_active_sub(message.from_user.id)
-    await message.answer(report, parse_mode="HTML", reply_markup=back_to_menu_kb(has_sub))
+    mode = data.get("mode", "ssl")
+    host = message.text.strip()
+    msg = await message.answer("🔐 Проверяю...")
+    try:
+        if mode == "ddos":
+            result = await check_ddos_protection(host)
+            text = format_ddos_report(result)
+        else:
+            result = await check_ssl(host)
+            text = format_ssl_report(host, result)
+        if len(text) > 4000:
+            text = text[:4000] + "\n..."
+        await msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb())
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {e}", reply_markup=back_to_menu_kb())
 
 
-# ─── DNS / IP checker ─────────────────────────────────────────────────────────
+# ─── DNS ─────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "dns")
-async def cb_dns(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(UserState.dns_waiting_url)
-    await safe_edit(
-        callback,
-        "🌐 <b>DNS / IP / Порты</b>\n\n"
-        "Отправь домен или ссылку:\n"
-        "<code>example.com</code> или <code>https://example.com</code>",
-        reply_markup=cancel_kb(),
-    )
-    await callback.answer()
+async def cb_dns(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(UserStates.dns_waiting_url)
+    await cb.message.answer("🌐 Отправьте домен или IP:", reply_markup=cancel_kb())
+    await cb.answer()
 
 
-@router.message(UserState.dns_waiting_url)
-async def process_dns_url(message: Message, state: FSMContext):
-    raw = (message.text or "").strip()
-    hostname = raw.removeprefix("https://").removeprefix("http://").split("/")[0].split("?")[0]
-
-    if not hostname or "." not in hostname:
-        await message.answer("❌ Введи корректный домен, например: <code>example.com</code>", reply_markup=cancel_kb())
-        return
-
+@router.message(UserStates.dns_waiting_url)
+async def handle_dns_url(message: Message, state: FSMContext):
+    data = await state.get_data()
     await state.clear()
-    wait = await message.answer(f"🌐 Смотрю DNS и сканирую порты <code>{escape(hostname)}</code>…\n⏳ ~10 сек")
-    dns = await dns_lookup(hostname)
-    ports = await check_ports(hostname, list(COMMON_PORTS.keys()))
-    await wait.delete()
-    report = format_dns_report(hostname, dns, ports)
-    has_sub = storage.has_active_sub(message.from_user.id)
-    await message.answer(report, parse_mode="HTML", reply_markup=back_to_menu_kb(has_sub))
+    mode = data.get("mode", "dns")
+    host = message.text.strip()
+    msg = await message.answer("🌐 Проверяю...")
+    try:
+        if mode == "ddos":
+            result = await check_ddos_protection(host)
+            text = format_ddos_report(result)
+        else:
+            dns_data = await dns_lookup(host)
+            ports_data = await check_ports(host, [80, 443, 8080, 8443, 22, 21])
+            text = format_dns_report(host, dns_data, ports_data)
+        if len(text) > 4000:
+            text = text[:4000] + "\n..."
+        await msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb())
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка: {e}", reply_markup=back_to_menu_kb())
 
 
-# ─── DDoS protection checker ──────────────────────────────────────────────────
+# ─── DDoS check ──────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "ddos_check")
-async def cb_ddos_check(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(UserState.ddos_waiting_ip)
-    await safe_edit(
-        callback,
-        "🛡️ <b>Проверка DDoS-защиты интернета</b>\n\n"
-        "Эта проверка анализирует, действительно ли ваш провайдер обеспечивает "
-        "защиту от DDoS-атак, как заявляет.\n\n"
-        "📌 <b>Как узнать свой IP-адрес?</b>\n"
-        "Перейдите на <a href=\"https://2ip.ru\">2ip.ru</a> или "
-        "<a href=\"https://whatismyip.com\">whatismyip.com</a> и скопируйте адрес.\n\n"
-        "✏️ <b>Введите ваш публичный IP-адрес:</b>\n"
-        "Пример: <code>85.142.10.55</code>",
-        reply_markup=cancel_kb(),
-    )
-    await callback.answer()
+async def cb_ddos(cb: CallbackQuery, state: FSMContext):
+    from bot.utils.ddos_checker import check_ddos_protection
+    uid = cb.from_user.id
+    await state.set_state(UserStates.dns_waiting_url)
+    await state.update_data(mode="ddos")
+    await cb.message.answer("🛡️ Отправьте домен для проверки DDoS-защиты:", reply_markup=cancel_kb())
+    await cb.answer()
 
 
-@router.message(UserState.ddos_waiting_ip)
-async def process_ddos_ip(message: Message, state: FSMContext):
-    raw = (message.text or "").strip()
+# ─── History ─────────────────────────────────────────────────────────────────
 
-    import re
-    raw = re.sub(r"^https?://", "", raw).split("/")[0].split(":")[0].strip()
-
-    if not raw or (
-        not re.match(r"^(\d{1,3}\.){3}\d{1,3}$", raw)
-        and not re.match(r"^[0-9a-fA-F:]{2,39}$", raw)
-    ):
-        await message.answer(
-            "❌ Некорректный IP-адрес.\n"
-            "Введи IPv4, например: <code>85.142.10.55</code>",
-            reply_markup=cancel_kb(),
-        )
+@router.callback_query(F.data == "history")
+async def cb_history(cb: CallbackQuery):
+    uid = cb.from_user.id
+    history = storage.get_history(uid)
+    if not history:
+        await cb.answer("История пуста", show_alert=True)
         return
 
-    await state.clear()
-    wait = await message.answer(
-        f"🛡️ Проверяю <code>{escape(raw)}</code> на наличие DDoS-защиты…\n"
-        "⏳ ~10–15 сек"
+    lines = ["📋 <b>История проверок</b>\n"]
+    for h in history:
+        domain = (h["url"] or "")[:40]
+        score = h.get("score", "—")
+        date = h.get("date", "")
+        rid = h.get("report_id")
+        if rid:
+            lines.append(f"• <a href='{_report_url(rid)}'>{domain}</a> — {score}pts <i>{date}</i>")
+        else:
+            lines.append(f"• {domain} — {score}pts <i>{date}</i>")
+
+    await cb.message.answer(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=back_to_menu_kb(),
+        disable_web_page_preview=True,
     )
-    data = await check_ddos_protection(raw)
-    await wait.delete()
-    report = format_ddos_report(data)
-    has_sub = storage.has_active_sub(message.from_user.id)
-    await message.answer(report, parse_mode="HTML", reply_markup=back_to_menu_kb(has_sub))
+    await cb.answer()
 
 
-# ─── Stress test ──────────────────────────────────────────────────────────────
+# ─── Subscription ────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "stress")
-async def cb_stress(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    user_id = callback.from_user.id
+@router.callback_query(F.data.in_({"sub", "buy"}))
+async def cb_sub(cb: CallbackQuery):
+    uid = cb.from_user.id
+    is_pro = storage.is_pro(uid)
+    expires = storage.sub_expires_str(uid)
+    prices = storage.get_prices()
 
-    if not storage.has_active_sub(user_id):
-        await safe_edit(
-            callback,
-            "🔥 <b>Стресс-тест</b>\n\n"
-            "Доступен только с подпиской 💎",
-            reply_markup=main_menu_kb(False),
-        )
-        await callback.answer()
-        return
+    status_line = ""
+    if is_pro and expires:
+        status_line = f"✅ <b>Ваша подписка PRO активна</b> до <b>{expires}</b>\n\n"
 
-    is_subscribed = await check_subscription(bot, user_id)
-    if not is_subscribed:
-        await safe_edit(callback, "❌ Нужно подписаться на канал.", reply_markup=subscribe_kb())
-        await callback.answer()
-        return
-
-    await state.set_state(UserState.stress_waiting_url)
-    await safe_edit(
-        callback,
-        "🔥 <b>Стресс-тест</b>\n\n"
-        "Введи цель для теста:\n\n"
-        "• IP адрес: <code>185.24.10.5</code>\n"
-        "• IP с портом: <code>185.24.10.5:8080</code>\n"
-        "• Домен: <code>mysite.com</code>\n"
-        "• Полная ссылка: <code>https://mysite.com</code>",
-        reply_markup=cancel_kb(),
+    text = (
+        f"{status_line}"
+        f"💎 <b>Подписка PRO</b>\n\n"
+        f"PRO включает:\n"
+        f"• Нагрузочный тест до 2000 RPS\n"
+        f"• Эмуляция реального трафика\n"
+        f"• Обход кэш-слоёв (ротация сессий)\n"
+        f"• Обнаружение Cloudflare / Akamai\n"
+        f"• Без лимита по времени\n"
+        f"• Отчёты с графиками\n\n"
+        f"Выберите план:"
     )
-    await callback.answer()
-
-
-@router.message(UserState.stress_waiting_url)
-async def process_stress_url(message: Message, state: FSMContext):
-    import re
-    raw = (message.text or "").strip()
-
-    # Detect bare IP (optionally with port): e.g. 185.24.10.5 or 185.24.10.5:8080
-    ip_pattern = re.compile(
-        r'^(\d{1,3}\.){3}\d{1,3}(:\d+)?(/\S*)?$'
+    await cb.message.answer(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=subscription_menu_kb(prices, is_pro, expires)
     )
-    if ip_pattern.match(raw):
-        url = "http://" + raw
-    elif not raw.startswith("http://") and not raw.startswith("https://"):
-        url = "https://" + raw
-    else:
-        url = raw
+    await cb.answer()
 
-    if not validators.url(url):
-        await message.answer(
-            "❌ Некорректный адрес.\n\n"
-            "Можно вводить:\n"
-            "• IP адрес: <code>185.24.10.5</code>\n"
-            "• IP с портом: <code>185.24.10.5:8080</code>\n"
-            "• Домен: <code>mysite.com</code>\n"
-            "• Полная ссылка: <code>https://mysite.com</code>",
-            reply_markup=cancel_kb(),
-        )
+
+# ─── LITE stress test ────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "stress_lite")
+async def cb_stress_lite(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not storage.is_web_registered(uid):
+        await cb.answer("Сначала пройдите веб-регистрацию (/register)", show_alert=True)
         return
-
-    await state.update_data(stress_url=url)
-    await state.set_state(UserState.stress_choosing_intensity)
-
-    await message.answer(
-        f"🎯 <code>{escape(url)}</code>\n\n"
-        "Выбери интенсивность теста:",
-        reply_markup=stress_start_kb(),
+    if not storage.can_analyze(uid):
+        await cb.answer("Лимит тестов исчерпан", show_alert=True)
+        return
+    await cb.message.answer(
+        "🔧 <b>LITE нагрузочный тест</b>\n\n"
+        "Скрипт запускается локально с <b>вашего IP</b>.\n"
+        "Ограничения: 100 RPS · 60 секунд · только HTTP GET.\n\n"
+        "Выберите профиль:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=stress_lite_kb()
     )
+    await cb.answer()
 
 
-def _bar(done: int, total: int, width: int = 16) -> str:
-    filled = int(width * done / total) if total else 0
-    return "█" * filled + "░" * (width - filled)
+@router.callback_query(F.data.startswith("lite:"))
+async def cb_lite_run(cb: CallbackQuery, state: FSMContext):
+    _, duration, rps = cb.data.split(":")
+    await state.set_state(UserStates.stress_waiting_url)
+    await state.update_data(mode="lite", duration=int(duration), rps=int(rps))
+    await cb.message.answer("🌐 Отправьте URL для нагрузочного теста:", reply_markup=cancel_kb())
+    await cb.answer()
 
 
-def _sep() -> str:
-    return "─" * 24
-
-
-@router.callback_query(F.data.startswith("stress_run:"), UserState.stress_choosing_intensity)
-async def cb_stress_run(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-
-    if not storage.has_active_sub(user_id):
-        await callback.answer("❌ Требуется подписка", show_alert=True)
-        return
-
-    parts = callback.data.split(":")
-    total = int(parts[1])
-    concurrency = int(parts[2])
-
+@router.message(UserStates.stress_waiting_url)
+async def handle_lite_url(message: Message, state: FSMContext):
     data = await state.get_data()
-    url = data.get("stress_url")
     await state.clear()
+    uid = message.from_user.id
+    url = message.text.strip()
 
-    if not url:
-        await callback.answer("❌ URL не найден. Начни заново.", show_alert=True)
+    ok, url_or_err = validate_target_url(url)
+    if not ok:
+        await message.answer(f"❌ {url_or_err}", reply_markup=cancel_kb())
         return
 
-    await callback.answer()
+    duration = data.get("duration", 60)
+    max_rps = data.get("rps", 100)
 
-    host, explicit_port = _parse_target(url)
-    hostname = url.removeprefix("https://").removeprefix("http://").split("/")[0]
-    sep = _sep()
+    report_token = str(uuid.uuid4())
+    with get_session() as session:
+        key = f"lite_token_{uid}"
+        s = session.query(Setting).filter_by(key=key).first()
+        if s:
+            s.value = report_token
+        else:
+            session.add(Setting(key=key, value=report_token))
 
-    HTTP_PORTS  = {80, 8080, 8000, 3000, 5000}
-    HTTPS_PORTS = {443, 8443}
+    if not storage.is_pro(uid):
+        storage.use_free_analysis(uid)
 
-    # ── Phase 1: port scan ──────────────────────────────────────
-    msg = await callback.message.answer(
-        f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
-        f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
-        f"🔍 Сканирую открытые порты…",
-        parse_mode="HTML",
+    script = generate_lite_script(url_or_err, uid, report_token, max_rps, duration)
+    file_bytes = script.encode("utf-8")
+    filename = f"lite_test_{uid}.py"
+
+    await message.answer_document(
+        document=BufferedInputFile(file_bytes, filename=filename),
+        caption=(
+            f"⚡ <b>LITE-скрипт готов</b>\n\n"
+            f"🌐 Цель: <code>{url_or_err}</code>\n"
+            f"⏱ Длительность: <b>{duration} сек</b> | RPS: <b>{max_rps}</b>\n\n"
+            f"<b>Запуск:</b>\n"
+            f"<code>pip install aiohttp</code>\n"
+            f"<code>python3 {filename}</code>\n\n"
+            f"После завершения отчёт придёт в этот чат автоматически 📊"
+        ),
+        parse_mode=ParseMode.HTML,
+        reply_markup=back_to_menu_kb(),
     )
 
-    ports_to_scan = list(dict.fromkeys([explicit_port] + SCAN_PORTS))
-    open_ports = await scan_ports(host, ports_to_scan)
 
-    # ── Reachability check ──────────────────────────────────────
-    if not open_ports:
-        # Double-check with a direct TCP connect to the explicit port
-        probe = await scan_ports(host, [explicit_port], timeout=3.0)
-        if not probe:
-            try:
-                await msg.edit_text(
-                    f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
-                    f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
-                    f"🚫 <b>Цель недоступна с наших серверов</b>\n\n"
-                    f"Возможные причины:\n"
-                    f"• CDN / Cloudflare блокирует облачные IP\n"
-                    f"• Фаервол закрывает все входящие соединения\n"
-                    f"• Сайт работает только в определённых странах\n"
-                    f"• Домен не резолвится\n\n"
-                    f"💡 Попробуй другой сайт или проверь IP вручную.",
-                    parse_mode="HTML",
-                    reply_markup=main_menu_kb(True),
-                )
-            except Exception:
-                pass
-            return
+# ─── PRO stress test ─────────────────────────────────────────────────────────
 
-    if open_ports:
-        ports_str = "  ".join(f"<b>{p}</b>" for p in open_ports)
-        scan_info = f"✅ Открытые порты: {ports_str}"
-    else:
-        scan_info = f"⚠️ Порты закрыты — атакуем TCP на :{explicit_port}"
+@router.callback_query(F.data == "stress_pro")
+async def cb_stress_pro(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not storage.is_pro(uid):
+        await cb.answer("PRO-подписка требуется!", show_alert=True)
+        return
+    await cb.message.answer(
+        "⚡ <b>PRO нагрузочный тест</b>\n\n"
+        "Тест выполняется на серверах платформы.\n"
+        "Методы: GET · POST · HEAD\n"
+        "Активна ротация User-Agent и сессионных кук.\n\n"
+        "Выберите профиль интенсивности:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=stress_pro_kb()
+    )
+    await cb.answer()
 
-    # Decide mode
-    chosen_port = explicit_port
-    use_http = False
-    has_scheme = url.startswith("http://") or url.startswith("https://")
 
-    if open_ports:
-        chosen_port = explicit_port if explicit_port in open_ports else open_ports[0]
-        use_http = chosen_port in (HTTP_PORTS | HTTPS_PORTS)
-    if has_scheme and chosen_port in (HTTP_PORTS | HTTPS_PORTS):
-        use_http = True
+@router.callback_query(F.data.startswith("pro:"))
+async def cb_pro_run(cb: CallbackQuery, state: FSMContext):
+    _, duration, intensity = cb.data.split(":")
+    await state.set_state(UserStates.stress_pro_waiting_url)
+    await state.update_data(mode="pro", duration=int(duration), intensity=intensity)
+    await cb.message.answer("🌐 Отправьте URL для PRO нагрузочного теста:", reply_markup=cancel_kb())
+    await cb.answer()
 
-    mode_name = "🌐 HTTP-флуд" if use_http else "🔌 TCP-флуд"
-    mode_tip  = "" if use_http else "\nℹ️ RST/таймаут = пакеты дошли до цели"
 
-    try:
-        await msg.edit_text(
-            f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
-            f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
-            f"{scan_info}\n"
-            f"📡 Режим: {mode_name}  :{chosen_port}",
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
+@router.message(UserStates.stress_pro_waiting_url)
+async def handle_pro_url(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    uid = message.from_user.id
+    url = message.text.strip()
 
-    # ── Phase 2: countdown ──────────────────────────────────────
-    for n in (3, 2, 1):
-        try:
-            await msg.edit_text(
-                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ</b>\n{sep}\n"
-                f"🎯 <code>{escape(hostname)}</code>\n{sep}\n\n"
-                f"{scan_info}\n"
-                f"📡 Режим: {mode_name}  :{chosen_port}\n\n"
-                f"🚀 Запуск через <b>{n}…</b>",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-        await asyncio.sleep(1.0)
-
-    # ── Phase 3: flood with live progress ───────────────────────
-    async def on_progress(done: int, total_req: int, success: int, failed: int, rps: float):
-        pct = done * 100 // total_req
-        if use_http:
-            s_label = f"✅ Ответов:    <b>{success:,}</b>  ({success*100//done if done else 0}%)"
-            f_label = f"❌ Ошибок:     <b>{failed:,}</b>"
-        else:
-            s_label = f"🔌 Соединений: <b>{success:,}</b>  (принято)"
-            f_label = f"📶 RST/таймаут: <b>{failed:,}</b>  (пакеты дошли)"
-        try:
-            await msg.edit_text(
-                f"⚡ <b>НАГРУЗОЧНЫЙ ТЕСТ ИДЁТ</b>\n{sep}\n"
-                f"🎯 <code>{escape(hostname)}</code>  :{chosen_port}\n"
-                f"📡 {mode_name}\n{sep}\n\n"
-                f"📤 Пакетов: <b>{done:,}</b> / {total_req:,}\n"
-                f"{_bar(done, total_req)}  {pct}%\n\n"
-                f"{s_label}\n"
-                f"{f_label}\n"
-                f"⚡ RPS: <b>~{rps:.0f}</b>/сек"
-                f"{mode_tip}\n{sep}",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-    # ── Run flood ───────────────────────────────────────────────
-    try:
-        if use_http:
-            scheme = "https" if chosen_port in HTTPS_PORTS else "http"
-            if has_scheme:
-                flood_url = url
-            elif chosen_port not in (80, 443):
-                flood_url = f"{scheme}://{host}:{chosen_port}/"
-            else:
-                flood_url = f"{scheme}://{host}/"
-            result = await run_http_flood(flood_url, total, concurrency, on_progress)
-        else:
-            result = await run_tcp_flood(host, chosen_port, total, concurrency, on_progress)
-
-        result["port"] = chosen_port
-        result["open_ports"] = open_ports
-        result["host"] = host
-    except Exception as e:
-        try:
-            await msg.edit_text(
-                f"❌ <b>Ошибка при тесте</b>\n\n{escape(str(e))}",
-                reply_markup=main_menu_kb(True),
-            )
-        except Exception:
-            pass
+    if not storage.is_pro(uid):
+        await message.answer("⛔ Требуется PRO-подписка.")
         return
 
-    # ── Final report ────────────────────────────────────────────
-    report = format_stress_report(url, result)
-    try:
-        await msg.delete()
-    except Exception:
-        pass
-    await callback.message.answer(report, parse_mode="HTML", reply_markup=main_menu_kb(True))
-
-
-# ─── Fallback ─────────────────────────────────────────────────────────────────
-
-@router.message()
-async def fallback_handler(message: Message, state: FSMContext, bot: Bot):
-    user_id = message.from_user.id
-
-    if storage.is_banned(user_id):
+    ok, url_or_err = validate_target_url(url)
+    if not ok:
+        await message.answer(f"❌ {url_or_err}", reply_markup=cancel_kb())
         return
 
-    storage.upsert_user(user_id, message.from_user.first_name, message.from_user.username)
+    task_id = enqueue_task(uid, "load_test", {
+        "target_url": url_or_err,
+        "mode": "pro",
+        "duration": data.get("duration", 120),
+        "intensity": data.get("intensity", "medium"),
+    })
 
-    is_subscribed = await check_subscription(bot, user_id)
-    if not is_subscribed:
-        await message.answer("❌ Для использования бота подпишись на канал.", reply_markup=subscribe_kb())
-        return
-
-    text = (message.text or "").strip()
-    # Auto-detect URLs in plain text
-    if text.startswith("http") or ("." in text and " " not in text and len(text) > 5):
-        candidate = text if text.startswith("http") else "https://" + text
-        if validators.url(candidate):
-            if not storage.can_analyze(user_id):
-                limit = storage.get_free_limit()
-                await message.answer(
-                    f"⚠️ Исчерпан лимит: {limit}/день\nОформи подписку 💎",
-                    reply_markup=main_menu_kb(storage.has_active_sub(user_id)),
-                )
-                return
-            await _run_analysis(message, candidate, bot)
-            return
-
-    has_sub = storage.has_active_sub(user_id)
     await message.answer(
-        "🤔 Не понял. Отправь ссылку на сайт или нажми кнопку 👇",
-        reply_markup=main_menu_kb(has_sub),
+        f"⚡ <b>PRO тест запущен!</b>\n\n"
+        f"🌐 Цель: <code>{url_or_err}</code>\n"
+        f"📊 Профиль: <b>{data.get('intensity', 'medium').upper()}</b>\n"
+        f"⏱ Длительность: <b>{data.get('duration', 120)} сек</b>\n\n"
+        f"Когда тест завершится — отчёт придёт сюда 🔔",
+        parse_mode=ParseMode.HTML,
+        reply_markup=back_to_menu_kb(),
     )

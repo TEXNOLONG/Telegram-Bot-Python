@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoadTest Pro — Bot Status</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #07070f;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(99,102,241,.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(99,102,241,.06) 1px, transparent 1px);
+      background-size: 56px 56px;
+    }
+    .card {
+      position: relative; z-index: 1;
+      background: rgba(14,14,26,.9);
+      border: 1px solid rgba(99,102,241,.2);
+      border-radius: 20px;
+      padding: 48px 40px;
+      max-width: 440px; width: 90%;
+      text-align: center;
+      backdrop-filter: blur(20px);
+    }
+    .icon {
+      width: 72px; height: 72px;
+      background: linear-gradient(135deg,#6366f1,#8b5cf6);
+      border-radius: 20px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 30px; margin: 0 auto 24px;
+      box-shadow: 0 0 40px rgba(99,102,241,.4);
+    }
+    h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
+    p { color: #64748b; font-size: .95rem; margin-bottom: 28px; }
+    .status {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(16,185,129,.1); border: 1px solid rgba(16,185,129,.25);
+      border-radius: 30px; padding: 8px 18px;
+      color: #10b981; font-size: .875rem; font-weight: 600;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981;
+           animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon"><i class="fa-solid fa-bolt" style="color:#fff"></i></div>
+    <h1>LoadTest Pro</h1>
+    <p>Telegram-бот для профессионального нагрузочного тестирования</p>
+    <div class="status">
+      <div class="dot"></div>
+      Бот работает
+    </div>
+  </div>
+</body>
+</html>

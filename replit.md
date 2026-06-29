@@ -1,45 +1,66 @@
-# [Project name]
+# LoadTest Pro — Telegram Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Профессиональный Telegram-бот для нагрузочного тестирования сайтов с веб-отчётами.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `python main.py` — запуск бота + Flask веб-сервер (порт 5000)
+- Бот: `@Hayder_projectx_bot`
+- Веб-панель: `/` — статус, `/register/<id>` — регистрация, `/report/<id>` — отчёт
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.11, aiogram 3.x (Telegram Bot)
+- Flask (веб-сервер: регистрация + отчёты)
+- PostgreSQL + SQLAlchemy ORM (хранилище)
+- aiohttp (нагрузочные тесты, HTTP-клиент)
+- CryptoBot API (USDT-платежи)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `main.py` — точка входа: Flask + bot + task queue worker
+- `flask_app.py` — Flask маршруты (register, report, api/report)
+- `bot/` — модули бота
+  - `handlers/user.py` — пользовательские команды
+  - `handlers/admin.py` — админ-панель
+  - `handlers/payment.py` — оплата CryptoBot
+  - `utils/stress_profile.py` — LITE/PRO нагрузочное тестирование
+  - `utils/traffic_worker.py` — очередь задач (PostgreSQL)
+  - `utils/protection_bypass.py` — 100+ User-Agent, Cloudflare detection
+  - `utils/url_validator.py` — проверка целевого URL
+  - `utils/script_generator.py` — генерация LITE-скриптов
+  - `storage.py` — PostgreSQL-backed хранилище
+  - `models.py` — SQLAlchemy модели
+  - `db.py` — сессии БД
+- `templates/` — HTML шаблоны (register.html, report.html, index.html)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Один процесс: Flask (daemon thread) + asyncio bot + task_queue_worker в одном asyncio.gather
+- Все результаты (анализ + тест) сохраняются как Report с UUID → ссылка `/report/<uuid>`
+- LITE-тест: скрипт скачивается и запускается локально, результат POST на `/api/report`
+- PRO-тест: задача в PostgreSQL очереди, воркер запускает async TrafficWorker
+- Защитный обход PRO: ротация User-Agent + session cookie pool + human jitter
+- URL валидация: блокируются RFC1918, localhost, .gov/.mil домены
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- **LITE**: бесплатно, 3 теста/день, скрипт запускается локально (100 RPS, 60с, HTTP GET)
+- **PRO**: платная подписка (USDT), тест на серверах, до 2000 RPS, ротация сессий
+- **Анализ сайта**: SEO, SSL, производительность, безопасность, стек технологий
+- **Отчёты**: тёмный SPA с Chart.js, AOS.js анимации, Font Awesome иконки
+
+## Required Secrets
+
+- `BOT_TOKEN` — токен Telegram бота от @BotFather
+- `ADMIN_ID` — Telegram ID администратора
+- `CRYPTO_BOT_TOKEN` — токен CryptoBot (для платежей)
+- `DATABASE_URL` — PostgreSQL строка подключения (Replit DB)
+- `SESSION_SECRET` — Flask secret key
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Термины: load_test, stress_profile, traffic_worker (не "атака", "жертва", "взлом")
+- Уведомление при регистрации: только "Регистрация завершена" (без IP)
+- Результаты всегда как веб-ссылка на отчёт `/report/<uuid>`
+- Тёмная тема с AOS.js + Chart.js + Font Awesome на страницах отчётов

@@ -1,0 +1,2 @@
+- [LoadTest Pro architecture](loadtest-pro-arch.md) — модульный бот: Flask (порт 5000) + aiogram + PostgreSQL task queue в одном asyncio.gather
+- [Report page pattern](loadtest-pro-arch.md) — все результаты (анализ + тест) → Report UUID в PostgreSQL → ссылка /report/<uuid>, не в чат

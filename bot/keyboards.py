@@ -4,31 +4,34 @@ from bot.config import CHANNEL_LINK, SUBSCRIPTION_PLANS, USERS_PER_PAGE, PAYMENT
 
 # ─── User keyboards ───────────────────────────────────────────────────────────
 
-def subscribe_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_LINK)],
-        [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="checksub")],
-    ])
-
-
-def main_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
-    sub_label = "💎 Подписка ✅" if has_sub else "💎 Подписка"
-    return InlineKeyboardMarkup(inline_keyboard=[
+def main_menu_kb(has_sub: bool = False, is_registered: bool = False) -> InlineKeyboardMarkup:
+    sub_label = "💎 PRO ✅" if has_sub else "💎 PRO-подписка"
+    rows = [
         [InlineKeyboardButton(text="🔍 Анализировать сайт", callback_data="analyze")],
         [
             InlineKeyboardButton(text="🔐 SSL-сертификат", callback_data="ssl"),
             InlineKeyboardButton(text="🌐 DNS / IP", callback_data="dns"),
         ],
-        [
-            InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
-            InlineKeyboardButton(text="📋 История", callback_data="history"),
-        ],
-        [InlineKeyboardButton(text="🛡️ Проверка DDoS-защиты", callback_data="ddos_check")],
-        [
-            InlineKeyboardButton(text=sub_label, callback_data="sub"),
-            InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"),
-        ],
+    ]
+    if is_registered:
+        if has_sub:
+            rows.append([InlineKeyboardButton(text="⚡ PRO нагрузочный тест", callback_data="stress_pro")])
+        else:
+            rows.append([InlineKeyboardButton(text="🔧 LITE нагрузочный тест", callback_data="stress_lite")])
+    rows.append([InlineKeyboardButton(text="🛡️ Проверка DDoS-защиты", callback_data="ddos_check")])
+    rows.append([InlineKeyboardButton(text="📋 История", callback_data="history")])
+    rows.append([
+        InlineKeyboardButton(text=sub_label, callback_data="sub"),
+        InlineKeyboardButton(text="👤 Статус", callback_data="status"),
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def register_kb(user_id: int, domain: str) -> InlineKeyboardMarkup:
+    url = f"https://{domain}/register/{user_id}"
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔗 Зарегистрироваться", url=url)
+    ]])
 
 
 def cancel_kb() -> InlineKeyboardMarkup:
@@ -37,41 +40,36 @@ def cancel_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def back_to_menu_kb(has_sub: bool = False) -> InlineKeyboardMarkup:
-    sub_label = "💎 Подписка ✅" if has_sub else "💎 Подписка"
-    return InlineKeyboardMarkup(inline_keyboard=[
+def back_to_menu_kb(has_sub: bool = False, is_registered: bool = False) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(text="🔍 Анализировать снова", callback_data="analyze")],
-        [
-            InlineKeyboardButton(text="🔐 SSL-сертификат", callback_data="ssl"),
-            InlineKeyboardButton(text="🌐 DNS / IP", callback_data="dns"),
-        ],
-        [
-            InlineKeyboardButton(text="🔥 Стресс-тест", callback_data="stress"),
-            InlineKeyboardButton(text="🛡️ DDoS-защита", callback_data="ddos_check"),
-        ],
-        [
-            InlineKeyboardButton(text=sub_label, callback_data="sub"),
-            InlineKeyboardButton(text="◀️ Меню", callback_data="menu"),
-        ],
-    ])
+        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def stress_verify_kb(user_id: int) -> InlineKeyboardMarkup:
+def stress_lite_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Тег добавлен — проверить!", callback_data="stress_check")],
+        [InlineKeyboardButton(text="60 сек  /  100 RPS", callback_data="lite:60:100")],
+        [InlineKeyboardButton(text="30 сек  /   50 RPS", callback_data="lite:30:50")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
     ])
 
 
-def stress_start_kb() -> InlineKeyboardMarkup:
+def stress_pro_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔥  1 000 запросов  /  100 потоков  — Лёгкий",   callback_data="stress_run:1000:100")],
-        [InlineKeyboardButton(text="💥  5 000 запросов  /  300 потоков  — Средний",  callback_data="stress_run:5000:300")],
-        [InlineKeyboardButton(text="⚡ 10 000 запросов  /  500 потоков  — Сильный",  callback_data="stress_run:10000:500")],
-        [InlineKeyboardButton(text="🌋 25 000 запросов  /  800 потоков  — Мощный",   callback_data="stress_run:25000:800")],
-        [InlineKeyboardButton(text="☢️ 50 000 запросов  / 1500 потоков  — Жёсткий",  callback_data="stress_run:50000:1500")],
-        [InlineKeyboardButton(text="💀100 000 запросов  / 3000 потоков  — МАКСИМУМ", callback_data="stress_run:100000:3000")],
+        [InlineKeyboardButton(text="🔥 Низкий   — 200 RPS / 60с",  callback_data="pro:60:low")],
+        [InlineKeyboardButton(text="💥 Средний  — 500 RPS / 120с", callback_data="pro:120:medium")],
+        [InlineKeyboardButton(text="⚡ Высокий  — 1000 RPS / 180с", callback_data="pro:180:high")],
+        [InlineKeyboardButton(text="🌪️ Ультра   — 2000 RPS / 300с", callback_data="pro:300:ultra")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
+    ])
+
+
+def admin_test_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔧 Кастомный тест", callback_data="admin_custom_test")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm")],
     ])
 
 
@@ -80,18 +78,16 @@ def stress_start_kb() -> InlineKeyboardMarkup:
 def subscription_menu_kb(prices: dict, has_sub: bool, expires: str | None) -> InlineKeyboardMarkup:
     rows = []
     plan_map = {
-        "week":    ("⚡", "7 дней"),
-        "month":   ("💎", "30 дней"),
-        "quarter": ("👑", "90 дней"),
+        "week":    ("⚡", "PRO 7 дней"),
+        "month":   ("💎", "PRO 30 дней"),
+        "quarter": ("👑", "PRO 90 дней"),
     }
     for key, (emoji, label) in plan_map.items():
         price = prices.get(key, SUBSCRIPTION_PLANS[key]["price"])
-        rows.append([
-            InlineKeyboardButton(
-                text=f"{emoji} {label} — ${price} USDT",
-                callback_data=f"plan:{key}",
-            )
-        ])
+        rows.append([InlineKeyboardButton(
+            text=f"{emoji} {label} — ${price} USDT",
+            callback_data=f"plan:{key}",
+        )])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -120,7 +116,10 @@ def admin_main_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🖼 Баннер", callback_data="adm_banner"),
             InlineKeyboardButton(text="⚙️ Настройки", callback_data="adm_set"),
         ],
-        [InlineKeyboardButton(text="🚫 Забанить по ID", callback_data="adm_banid")],
+        [
+            InlineKeyboardButton(text="📋 Логи", callback_data="adm_logs"),
+            InlineKeyboardButton(text="🚀 Тест (admin)", callback_data="adm_test"),
+        ],
     ])
 
 
@@ -133,20 +132,20 @@ def admin_back_kb() -> InlineKeyboardMarkup:
 def admin_users_kb(users: list, page: int, total: int) -> InlineKeyboardMarkup:
     rows = []
     for u in users:
-        fn = u.get("first_name", "—")[:20]
+        fn = (u.get("first_name") or "—")[:20]
         un = f"@{u['username']}" if u.get("username") else f"#{u['id']}"
         ban = "🚫" if u.get("banned") else ""
         sub = "💎" if _has_active_sub(u) else ""
-        rows.append([
-            InlineKeyboardButton(
-                text=f"{ban}{sub} {fn} {un}",
-                callback_data=f"adm_u:{u['id']}",
-            )
-        ])
+        rows.append([InlineKeyboardButton(
+            text=f"{ban}{sub} {fn} {un}",
+            callback_data=f"adm_u:{u['id']}",
+        )])
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_users:{page - 1}"))
-    nav.append(InlineKeyboardButton(text=f"{page + 1}/{max(1, (total - 1) // USERS_PER_PAGE + 1)}", callback_data="noop"))
+    nav.append(InlineKeyboardButton(
+        text=f"{page + 1}/{max(1, (total - 1) // USERS_PER_PAGE + 1)}", callback_data="noop"
+    ))
     if (page + 1) * USERS_PER_PAGE < total:
         nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_users:{page + 1}"))
     if nav:
@@ -200,7 +199,7 @@ def admin_settings_kb(prices: dict, free_limit: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=f"⚡ Цена 7 дней: ${pw}", callback_data="adm_price:week")],
         [InlineKeyboardButton(text=f"💎 Цена 30 дней: ${pm}", callback_data="adm_price:month")],
         [InlineKeyboardButton(text=f"👑 Цена 90 дней: ${pq}", callback_data="adm_price:quarter")],
-        [InlineKeyboardButton(text=f"🆓 Бесплатно в день: {free_limit}", callback_data="adm_setlim")],
+        [InlineKeyboardButton(text=f"🆓 Бесплатных тестов в день: {free_limit}", callback_data="adm_setlim")],
         [InlineKeyboardButton(text="◀️ В меню", callback_data="adm")],
     ])
 
@@ -221,12 +220,10 @@ def admin_payments_kb(page: int, total: int) -> InlineKeyboardMarkup:
 
 
 def confirm_kb(yes_cb: str, no_cb: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Да", callback_data=yes_cb),
-            InlineKeyboardButton(text="❌ Нет", callback_data=no_cb),
-        ]
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да", callback_data=yes_cb),
+        InlineKeyboardButton(text="❌ Нет", callback_data=no_cb),
+    ]])
 
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
@@ -237,6 +234,6 @@ def _has_active_sub(user: dict) -> bool:
     if not exp:
         return False
     try:
-        return datetime.fromisoformat(exp) > datetime.now()
+        return datetime.fromisoformat(exp) > datetime.utcnow()
     except Exception:
         return False
