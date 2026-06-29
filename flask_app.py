@@ -108,6 +108,32 @@ def view_report(report_id: str):
     return render_template("report.html", report=report, data=data)
 
 
+@app.route("/report/<report_id>/download")
+def download_report(report_id: str):
+    try:
+        report = storage.get_report(report_id)
+    except Exception as e:
+        logger.error("DB error loading report %s: %s", report_id, e)
+        abort(500)
+
+    if not report:
+        abort(404)
+
+    data = report.get("data") or {}
+    html_content = render_template("report.html", report=report, data=data)
+
+    from flask import Response
+    target = (report.get("target_url") or "report").replace("https://", "").replace("http://", "").split("/")[0]
+    safe_target = "".join(c if c.isalnum() or c in "-_." else "_" for c in target)[:40]
+    filename = f"report_{safe_target}_{report_id[:8]}.html"
+
+    return Response(
+        html_content,
+        mimetype="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ─── LITE report submission (legacy endpoint — kept for compatibility) ─────────
 
 @app.route("/api/report", methods=["POST"])

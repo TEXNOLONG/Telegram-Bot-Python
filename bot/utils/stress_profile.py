@@ -459,37 +459,37 @@ def build_stress_profile(
         return StressProfile(
             target_url=target_url,
             duration=min(duration, 60),
-            concurrency=20,
-            max_rps=100,
+            concurrency=50,
+            max_rps=300,
             mode="lite",
             method_type=method_type if method_type != "auto" else "http_flood",
-            methods=["GET"],
-            timeout=8.0,
+            methods=["GET", "HEAD"],
+            timeout=6.0,
         )
 
     if mode == "flood":
-        rps_map = {"low": 300, "medium": 700, "high": 1500, "ultra": 3000}
-        conc_map = {"low": 100, "medium": 300, "high": 600, "ultra": 1000}
+        rps_map = {"low": 1000, "medium": 2500, "high": 5000, "ultra": 8000}
+        conc_map = {"low": 300, "medium": 700, "high": 1500, "ultra": 3000}
         return StressProfile(
             target_url=target_url,
             duration=min(duration, 300),
-            concurrency=conc_map.get(intensity, 300),
-            max_rps=rps_map.get(intensity, 700),
+            concurrency=conc_map.get(intensity, 700),
+            max_rps=rps_map.get(intensity, 2500),
             mode="flood",
             method_type=method_type,
             methods=["GET", "POST", "HEAD", "OPTIONS"],
-            timeout=3.0,
+            timeout=2.0,
         )
 
-    rps_map = {"low": 200, "medium": 500, "high": 1000, "ultra": 2000}
-    conc_map = {"low": 50, "medium": 150, "high": 350, "ultra": 600}
+    rps_map = {"low": 500, "medium": 1200, "high": 2500, "ultra": 5000}
+    conc_map = {"low": 150, "medium": 400, "high": 800, "ultra": 1500}
     return StressProfile(
         target_url=target_url,
         duration=duration,
-        concurrency=conc_map.get(intensity, 150),
-        max_rps=rps_map.get(intensity, 500),
+        concurrency=conc_map.get(intensity, 400),
+        max_rps=rps_map.get(intensity, 1200),
         mode="pro",
         method_type=method_type,
         methods=["GET", "POST", "HEAD"],
-        timeout=5.0,
+        timeout=4.0,
     )

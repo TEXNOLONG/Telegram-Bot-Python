@@ -4,19 +4,22 @@ from bot.config import SUBSCRIPTION_PLANS, USERS_PER_PAGE, PAYMENTS_PER_PAGE
 
 def main_menu_kb(has_sub: bool = False, is_registered: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Анализ сайта", callback_data="analyze")],
+        [
+            InlineKeyboardButton(text="🔍 Анализ сайта", callback_data="analyze"),
+            InlineKeyboardButton(text="🌐 Проверка IP", callback_data="ip_check"),
+        ],
     ]
     if is_registered:
         if has_sub:
-            rows.append([InlineKeyboardButton(text="DDoS PRO", callback_data="stress_pro")])
-            rows.append([InlineKeyboardButton(text="DDoS Flood", callback_data="stress_flood")])
+            rows.append([InlineKeyboardButton(text="⚡ DDoS PRO", callback_data="stress_pro")])
+            rows.append([InlineKeyboardButton(text="💥 DDoS Flood", callback_data="stress_flood")])
         else:
-            rows.append([InlineKeyboardButton(text="DDoS Lite (бесплатно)", callback_data="stress_lite")])
+            rows.append([InlineKeyboardButton(text="⚡ DDoS Lite (бесплатно)", callback_data="stress_lite")])
     else:
-        rows.append([InlineKeyboardButton(text="DDoS Lite (регистрация)", callback_data="need_reg")])
+        rows.append([InlineKeyboardButton(text="⚡ DDoS Lite (регистрация)", callback_data="need_reg")])
     rows.append([
-        InlineKeyboardButton(text="Статус", callback_data="status"),
-        InlineKeyboardButton(text="PRO подписка" if not has_sub else "Продлить PRO", callback_data="sub"),
+        InlineKeyboardButton(text="📊 Статус", callback_data="status"),
+        InlineKeyboardButton(text="👑 PRO подписка" if not has_sub else "♻️ Продлить PRO", callback_data="sub"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

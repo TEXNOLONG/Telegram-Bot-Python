@@ -34,6 +34,7 @@ class UserStates(StatesGroup):
     stress_waiting_url = State()
     stress_pro_waiting_url = State()
     stress_flood_waiting_url = State()
+    ip_check_waiting = State()
 
 
 def _report_url(report_id: str) -> str:
@@ -485,6 +486,177 @@ async def cb_flood_duration(cb: CallbackQuery, state: FSMContext):
     await state.update_data(duration=duration)
     await _delete_and_send(cb, "Отправьте URL или домен:", reply_markup=cancel_kb())
     await cb.answer()
+
+
+# ─── IP Checker ───────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "ip_check")
+async def cb_ip_check(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(UserStates.ip_check_waiting)
+    await _delete_and_send(
+        cb,
+        "<b>🌐 Проверка IP / Домена</b>\n\n"
+        "Введите домен или IP-адрес.\n"
+        "Бот определит:\n"
+        "— IP-адрес и геолокацию\n"
+        "— Хостинг / ASN / провайдер\n"
+        "— Обратный DNS (PTR)\n"
+        "— Защита (Cloudflare / CDN)\n"
+        "— Открытые порты\n\n"
+        "Пример: <code>google.com</code> или <code>1.1.1.1</code>",
+        reply_markup=cancel_kb(),
+    )
+    await cb.answer()
+
+
+@router.message(UserStates.ip_check_waiting)
+async def handle_ip_check(message: Message, state: FSMContext):
+    await state.clear()
+    raw = message.text.strip()
+
+    # Strip protocol if given
+    host = raw.replace("https://", "").replace("http://", "").split("/")[0].strip()
+    if not host:
+        await message.answer("Введите домен или IP.", reply_markup=cancel_kb())
+        return
+
+    msg = await message.answer(f"<b>🔍 Анализирую:</b> <code>{escape(host)}</code>...", parse_mode=ParseMode.HTML)
+
+    result = await _full_ip_check(host)
+    await msg.edit_text(result, parse_mode=ParseMode.HTML, reply_markup=back_to_menu_kb(), disable_web_page_preview=True)
+
+
+async def _full_ip_check(host: str) -> str:
+    import aiohttp as _aio
+
+    lines = [f"<b>🌐 IP-проверка:</b> <code>{escape(host)}</code>\n"]
+
+    # Resolve IP
+    loop = asyncio.get_event_loop()
+    try:
+        ip = await loop.run_in_executor(None, socket.gethostbyname, host)
+        is_ip_input = host == ip
+        lines.append(f"📍 IP-адрес: <code>{ip}</code>")
+    except Exception:
+        lines.append("❌ Не удалось определить IP-адрес")
+        return "\n".join(lines)
+
+    # Reverse DNS
+    try:
+        ptr = await loop.run_in_executor(None, lambda: socket.gethostbyaddr(ip)[0])
+        lines.append(f"🔁 PTR (обратный DNS): <code>{escape(ptr)}</code>")
+    except Exception:
+        lines.append("🔁 PTR: не настроен")
+
+    # Geo + ASN via ip-api
+    try:
+        connector = _aio.TCPConnector(ssl=False)
+        async with _aio.ClientSession(connector=connector) as session:
+            async with session.get(
+                f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,isp,org,as,proxy,hosting,mobile",
+                timeout=_aio.ClientTimeout(total=8),
+            ) as resp:
+                geo = await resp.json()
+
+        if geo.get("status") == "success":
+            country = geo.get("country", "—")
+            cc = geo.get("countryCode", "")
+            region = geo.get("regionName", "—")
+            city = geo.get("city", "—")
+            isp = geo.get("isp", "—")
+            org = geo.get("org", "—")
+            asn = geo.get("as", "—")
+            is_proxy = geo.get("proxy", False)
+            is_hosting = geo.get("hosting", False)
+            is_mobile = geo.get("mobile", False)
+
+            flag = _country_flag(cc)
+            lines.append(f"\n{flag} <b>Геолокация:</b>")
+            lines.append(f"  🌍 Страна: <b>{escape(country)}</b>")
+            lines.append(f"  🏙 Регион/Город: {escape(region)}, {escape(city)}")
+            lines.append(f"  🏢 Провайдер: <code>{escape(isp)}</code>")
+            lines.append(f"  🏗 Организация: <code>{escape(org)}</code>")
+            lines.append(f"  📡 ASN: <code>{escape(asn)}</code>")
+
+            tags = []
+            if is_proxy:
+                tags.append("🔒 Proxy/VPN")
+            if is_hosting:
+                tags.append("🖥 Хостинг/DC")
+            if is_mobile:
+                tags.append("📱 Мобильный")
+            if tags:
+                lines.append(f"  🏷 Тип: {' | '.join(tags)}")
+    except Exception as e:
+        lines.append(f"⚠️ Геолокация недоступна")
+
+    # Cloudflare / CDN detection
+    try:
+        connector = _aio.TCPConnector(ssl=False)
+        async with _aio.ClientSession(connector=connector) as session:
+            async with session.get(
+                f"http://{host}/",
+                timeout=_aio.ClientTimeout(total=6),
+                allow_redirects=True,
+                ssl=False,
+                headers={"User-Agent": "Mozilla/5.0"},
+            ) as resp:
+                hdrs = dict(resp.headers)
+                protection = []
+                if hdrs.get("CF-RAY") or "cloudflare" in hdrs.get("Server", "").lower():
+                    protection.append("🌩 Cloudflare")
+                if hdrs.get("X-Akamai-Transformed") or "akamai" in hdrs.get("Via", "").lower():
+                    protection.append("🌐 Akamai")
+                if hdrs.get("X-Served-By"):
+                    protection.append("🚀 Fastly CDN")
+                if "ddos-guard" in hdrs.get("Server", "").lower():
+                    protection.append("🛡 DDoS-Guard")
+                server = hdrs.get("Server", "")
+                if server and not protection:
+                    protection.append(f"🖥 {escape(server[:30])}")
+
+                lines.append(f"\n🛡 <b>Защита:</b> {'нет / прямой IP' if not protection else ' | '.join(protection)}")
+                if resp.status:
+                    lines.append(f"📶 HTTP статус: <b>{resp.status}</b>")
+    except Exception:
+        lines.append("\n🛡 Защита: не удалось проверить (порт 80 закрыт?)")
+
+    # Port scan (common ports)
+    lines.append("\n🔓 <b>Открытые порты:</b>")
+    open_ports = await _scan_ports(ip, [21, 22, 25, 80, 443, 3306, 3389, 8080, 8443])
+    if open_ports:
+        port_names = {21: "FTP", 22: "SSH", 25: "SMTP", 80: "HTTP", 443: "HTTPS",
+                      3306: "MySQL", 3389: "RDP", 8080: "HTTP-alt", 8443: "HTTPS-alt"}
+        port_strs = [f"<code>{p}</code> ({port_names.get(p, '?')})" for p in open_ports]
+        lines.append("  " + " | ".join(port_strs))
+    else:
+        lines.append("  Все проверенные порты закрыты")
+
+    return "\n".join(lines)
+
+
+async def _scan_ports(ip: str, ports: list) -> list:
+    open_ports = []
+
+    async def check(port):
+        try:
+            _, w = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=1.5)
+            w.close()
+            open_ports.append(port)
+        except Exception:
+            pass
+
+    await asyncio.gather(*[check(p) for p in ports])
+    return sorted(open_ports)
+
+
+def _country_flag(cc: str) -> str:
+    if not cc or len(cc) != 2:
+        return "🌍"
+    try:
+        return chr(0x1F1E6 + ord(cc[0]) - ord('A')) + chr(0x1F1E6 + ord(cc[1]) - ord('A'))
+    except Exception:
+        return "🌍"
 
 
 @router.message(UserStates.stress_flood_waiting_url)
