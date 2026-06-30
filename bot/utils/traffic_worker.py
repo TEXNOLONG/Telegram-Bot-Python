@@ -36,6 +36,9 @@ async def process_task(task_id: str, bot=None):
             params.get("mode", "?"),
         )
 
+        progress_chat_id = params.get("progress_chat_id")
+        progress_msg_id  = params.get("progress_msg_id")
+
         if task_type == "load_test":
             method_type = params.get("method_type", "auto")
             if method_type == "auto":
@@ -54,7 +57,39 @@ async def process_task(task_id: str, bot=None):
                 intensity=params.get("intensity", "medium"),
                 method_type=method_type,
             )
-            result = await run_load_test(profile)
+
+            # Build live-progress callback if caller provided message location
+            async def _progress_cb(result, elapsed, remaining):
+                if not (bot and progress_chat_id and progress_msg_id):
+                    return
+                rps  = round(result.rps, 0)
+                total = result.total_requests
+                sr   = result.success_rate
+                prot = result.protection_info or {}
+                prot_line = f"\n🛡 Защита: <b>{prot.get('provider','—')}</b> → cache_bust" if prot.get("detected") else ""
+                bar_full  = 20
+                done_pct  = min(1.0, elapsed / max(profile.duration, 1))
+                bar_done  = int(done_pct * bar_full)
+                bar       = "█" * bar_done + "░" * (bar_full - bar_done)
+                try:
+                    await bot.edit_message_text(
+                        chat_id=progress_chat_id,
+                        message_id=progress_msg_id,
+                        text=(
+                            f"⚡ <b>Тест идёт...</b>\n\n"
+                            f"🎯 <code>{params.get('target_url','')}</code>\n"
+                            f"[{bar}] {int(done_pct*100)}%\n\n"
+                            f"📊 RPS: <b>{rps}</b>  |  Успех: <b>{sr}%</b>\n"
+                            f"📦 Запросов: <b>{total}</b>\n"
+                            f"⏱ Осталось: <b>{int(remaining)}с</b>"
+                            f"{prot_line}"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+            result = await run_load_test(profile, progress_cb=_progress_cb)
             data = {
                 "mode": profile.mode,
                 "method_type": profile.method_type,
@@ -117,14 +152,32 @@ async def process_task(task_id: str, bot=None):
                     rps = data.get("rps", 0)
                     sr = data.get("success_rate", 0)
                     total = data.get("total_requests", 0)
-                    text = (
-                        f"⚡ <b>{label} завершён!</b>\n\n"
+                    prot = data.get("protection") or {}
+                    prot_line = f"\n🛡 Обход: <b>{prot.get('provider')}</b> → cache_bust" if prot.get("detected") else ""
+                    final_text = (
+                        f"✅ <b>{label} завершён!</b>\n\n"
                         f"🌐 <code>{params.get('target_url', '')}</code>\n"
                         f"🔫 Метод: <b>{method}</b>\n"
                         f"📊 RPS: <b>{rps}</b> | Успех: <b>{sr}%</b>\n"
-                        f"📦 Всего запросов: <b>{total}</b>\n\n"
+                        f"📦 Всего запросов: <b>{total}</b>"
+                        f"{prot_line}\n\n"
                         f"📋 <a href='{report_url}'>Открыть отчёт</a>"
                     )
+                    if progress_chat_id and progress_msg_id:
+                        try:
+                            await bot.edit_message_text(
+                                chat_id=progress_chat_id,
+                                message_id=progress_msg_id,
+                                text=final_text,
+                                parse_mode="HTML",
+                                disable_web_page_preview=True,
+                            )
+                        except Exception:
+                            await bot.send_message(user_id, final_text, parse_mode="HTML",
+                                                   disable_web_page_preview=True)
+                    else:
+                        await bot.send_message(user_id, final_text, parse_mode="HTML",
+                                               disable_web_page_preview=True)
                 else:
                     score = data.get("score", 0)
                     text = (
@@ -133,12 +186,9 @@ async def process_task(task_id: str, bot=None):
                         f"⭐ Оценка: <b>{score}/100</b>\n\n"
                         f"📋 <a href='{report_url}'>Открыть отчёт</a>"
                     )
-                await bot.send_message(
-                    user_id,
-                    text,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
+                    await bot.send_message(
+                        user_id, text, parse_mode="HTML", disable_web_page_preview=True,
+                    )
             except Exception as e:
                 logger.warning("Failed to notify user %s: %s", user_id, e)
 
@@ -192,15 +242,53 @@ async def task_queue_worker(bot=None):
         await asyncio.sleep(5)
 
 
-def enqueue_task(user_id: int, task_type: str, params: dict) -> str:
+async def scheduled_task_worker(bot=None):
+    """Promotes scheduled tasks to pending when their scheduled_for time arrives."""
+    logger.info("Scheduled task worker started")
+    while True:
+        try:
+            now = datetime.utcnow()
+            with get_session() as session:
+                due = (
+                    session.query(Task)
+                    .filter(Task.status == "scheduled")
+                    .filter(Task.scheduled_for <= now)
+                    .all()
+                )
+                for t in due:
+                    t.status = "pending"
+                    logger.info("Scheduled task %s promoted to pending", t.task_id)
+                    if bot and t.user_id:
+                        params = dict(t.params or {})
+                        url = params.get("target_url", "?")
+                        try:
+                            await bot.send_message(
+                                t.user_id,
+                                f"⏱ <b>Запланированный тест запущен!</b>\n\n"
+                                f"🎯 <code>{url}</code>\n\n"
+                                "Отчёт придёт по завершении.",
+                                parse_mode="HTML",
+                            )
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.error("Scheduled worker error: %s", e)
+
+        await asyncio.sleep(30)
+
+
+def enqueue_task(user_id: int, task_type: str, params: dict,
+                 scheduled_for: datetime = None) -> str:
     task_id = str(uuid.uuid4())
+    status = "scheduled" if scheduled_for else "pending"
     with get_session() as session:
         task = Task(
             task_id=task_id,
             user_id=user_id,
             task_type=task_type,
-            status="pending",
+            status=status,
             params=params,
+            scheduled_for=scheduled_for,
         )
         session.add(task)
     return task_id

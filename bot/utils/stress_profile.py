@@ -431,8 +431,24 @@ class TrafficWorker:
         return self._result
 
 
-async def run_load_test(profile: StressProfile) -> TrafficResult:
+async def run_load_test(profile: StressProfile, progress_cb=None) -> TrafficResult:
     worker = TrafficWorker(profile)
+
+    if progress_cb:
+        async def _progress_loop():
+            t0 = time.monotonic()
+            while not worker._stop_event.is_set():
+                await asyncio.sleep(10)
+                if worker._stop_event.is_set():
+                    break
+                elapsed = time.monotonic() - t0
+                remaining = max(0, profile.duration - elapsed)
+                try:
+                    await progress_cb(worker._result, elapsed, remaining)
+                except Exception:
+                    pass
+        asyncio.create_task(_progress_loop())
+
     return await worker.run()
 
 

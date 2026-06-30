@@ -30,6 +30,15 @@ class User(Base):
     free_uses_date = Column(String(20), default="")
     total_analyses = Column(Integer, default=0)
 
+    # Referral system
+    referral_code = Column(String(12), unique=True, nullable=True, index=True)
+    referred_by = Column(BigInteger, nullable=True)
+    referral_count = Column(Integer, default=0)
+    bonus_tests = Column(Integer, default=0)
+
+    # Security: track blacklist violations
+    blocked_attempts = Column(Integer, default=0)
+
 
 class Report(Base):
     __tablename__ = "reports"
@@ -82,6 +91,7 @@ class Task(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+    scheduled_for = Column(DateTime, nullable=True)
 
 
 class PendingInvoice(Base):
@@ -111,3 +121,15 @@ class Setting(Base):
     id = Column(Integer, primary_key=True)
     key = Column(String(100), unique=True, nullable=False)
     value = Column(Text)
+
+
+class SecurityLog(Base):
+    __tablename__ = "security_log"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    user_ip = Column(String(64), nullable=True)
+    attempted_url = Column(String(1000), nullable=True)
+    reason = Column(String(500), nullable=True)
+    action_taken = Column(String(100), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)

@@ -5,7 +5,7 @@ from typing import Optional
 
 from bot.db import get_session
 from bot.models import (
-    User, History, PendingInvoice, Payment, Setting, AdminLog, Report
+    User, History, PendingInvoice, Payment, Setting, AdminLog, Report, SecurityLog
 )
 
 logger = logging.getLogger(__name__)
@@ -391,6 +391,149 @@ class Storage:
                 }
                 for r in rows
             ]
+
+    # ─── Referral system ──────────────────────────────────────────────────────
+
+    def get_or_create_referral_code(self, user_id: int) -> str:
+        import random, string
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u:
+                return ""
+            if u.referral_code:
+                return u.referral_code
+            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            while session.query(User).filter_by(referral_code=code).first():
+                code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            u.referral_code = code
+            return code
+
+    def get_user_by_referral_code(self, code: str) -> Optional[dict]:
+        with get_session() as session:
+            u = session.query(User).filter_by(referral_code=code.upper()).first()
+            return self._user_to_dict(u) if u else None
+
+    def apply_referral(self, new_user_id: int, referrer_id: int) -> bool:
+        """Give referrer +2 bonus tests when a new user joins via their link."""
+        with get_session() as session:
+            new_u = session.query(User).filter_by(telegram_id=new_user_id).first()
+            ref_u = session.query(User).filter_by(telegram_id=referrer_id).first()
+            if not new_u or not ref_u:
+                return False
+            if new_u.referred_by:
+                return False
+            new_u.referred_by = referrer_id
+            ref_u.bonus_tests = (ref_u.bonus_tests or 0) + 2
+            ref_u.referral_count = (ref_u.referral_count or 0) + 1
+            return True
+
+    def has_bonus_test(self, user_id: int) -> bool:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            return bool(u and (u.bonus_tests or 0) > 0)
+
+    def use_bonus_test(self, user_id: int) -> bool:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if u and (u.bonus_tests or 0) > 0:
+                u.bonus_tests -= 1
+                return True
+            return False
+
+    def get_bonus_tests(self, user_id: int) -> int:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            return (u.bonus_tests or 0) if u else 0
+
+    def get_referral_stats(self, user_id: int) -> dict:
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if not u:
+                return {"code": None, "count": 0, "bonus": 0}
+            return {
+                "code": u.referral_code,
+                "count": u.referral_count or 0,
+                "bonus": u.bonus_tests or 0,
+            }
+
+    # ─── Security / Auto-ban ──────────────────────────────────────────────────
+
+    def track_blocked_attempt(self, user_id: int, url: str, reason: str,
+                               user_ip: str = "unknown") -> dict:
+        """Log a blocked URL attempt. Auto-ban after 3 violations. Returns action info."""
+        action = "warned"
+        with get_session() as session:
+            u = session.query(User).filter_by(telegram_id=user_id).first()
+            if u:
+                u.blocked_attempts = (u.blocked_attempts or 0) + 1
+                attempts = u.blocked_attempts
+                if attempts >= 3 and not u.banned:
+                    u.banned = True
+                    action = "banned"
+                elif u.banned:
+                    action = "already_banned"
+            else:
+                attempts = 1
+
+            session.add(SecurityLog(
+                user_id=user_id,
+                user_ip=user_ip,
+                attempted_url=url,
+                reason=reason,
+                action_taken=action,
+            ))
+        return {"action": action, "attempts": attempts}
+
+    def get_security_logs(self, limit: int = 20) -> list[dict]:
+        with get_session() as session:
+            rows = (
+                session.query(SecurityLog)
+                .order_by(SecurityLog.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "user_id": r.user_id,
+                    "user_ip": r.user_ip,
+                    "attempted_url": r.attempted_url,
+                    "reason": r.reason,
+                    "action_taken": r.action_taken,
+                    "timestamp": r.timestamp.strftime("%d.%m.%Y %H:%M") if r.timestamp else "",
+                }
+                for r in rows
+            ]
+
+    # ─── User reports history ─────────────────────────────────────────────────
+
+    def get_user_reports(self, user_id: int, limit: int = 10) -> list[dict]:
+        with get_session() as session:
+            rows = (
+                session.query(Report)
+                .filter_by(user_id=user_id)
+                .order_by(Report.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "report_id": r.report_id,
+                    "report_type": r.report_type,
+                    "target_url": r.target_url or "—",
+                    "created_at": r.created_at.strftime("%d.%m %H:%M") if r.created_at else "",
+                }
+                for r in rows
+            ]
+
+    # ─── Scheduled tasks ──────────────────────────────────────────────────────
+
+    def can_use_test(self, user_id: int) -> bool:
+        """True if user can run a test (free slot OR bonus test OR PRO)."""
+        if self.has_active_sub(user_id):
+            return True
+        if self.has_bonus_test(user_id):
+            return True
+        return self.can_analyze(user_id)
 
     # ─── Reports ──────────────────────────────────────────────────────────────
 

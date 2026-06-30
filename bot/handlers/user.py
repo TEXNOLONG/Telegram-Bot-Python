@@ -2,6 +2,7 @@ import asyncio
 import logging
 import socket
 import uuid
+from datetime import datetime
 from html import escape
 from urllib.parse import urlparse
 
@@ -12,11 +13,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.config import DOMAIN
+from bot.config import DOMAIN, ADMIN_ID
 from bot.keyboards import (
     back_to_menu_kb, cancel_kb, main_menu_kb,
     register_kb, stress_lite_kb, stress_pro_kb, stress_flood_kb,
-    subscription_menu_kb,
+    subscription_menu_kb, my_tests_kb, referral_kb,
+    schedule_mode_kb, schedule_delay_kb,
 )
 from bot.storage import storage
 from bot.utils.url_validator import validate_target_url
@@ -35,6 +37,7 @@ class UserStates(StatesGroup):
     stress_pro_waiting_url = State()
     stress_flood_waiting_url = State()
     ip_check_waiting = State()
+    schedule_waiting_url = State()
 
 
 def _report_url(report_id: str) -> str:
@@ -66,6 +69,27 @@ async def _resolve_ip(host: str) -> str | None:
 
 # ─── /start ───────────────────────────────────────────────────────────────────
 
+async def _notify_admin_blocked(bot_obj, uid: int, url: str, reason: str,
+                                user_ip: str, action: str, attempts: int):
+    """Send a security alert to the admin when someone tries a blacklisted domain."""
+    try:
+        action_text = {"banned": "🚫 ЗАБАНЕН", "warned": "⚠️ Предупреждён",
+                       "already_banned": "🚫 Уже заблокирован"}.get(action, action)
+        await bot_obj.send_message(
+            ADMIN_ID,
+            f"🛡 <b>Попытка атаки запрещённого домена!</b>\n\n"
+            f"👤 user_id: <code>{uid}</code>\n"
+            f"🌐 IP: <code>{user_ip}</code>\n"
+            f"🔗 URL: <code>{escape(url)}</code>\n"
+            f"📛 Причина: {escape(reason)}\n"
+            f"🔢 Попыток: <b>{attempts}</b>\n"
+            f"⚡ Действие: <b>{action_text}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.warning("Failed to notify admin about blocked attempt: %s", e)
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -76,6 +100,27 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     storage.upsert_user(uid, message.from_user.first_name, message.from_user.username)
+
+    # Handle referral deep link: /start ref_XXXXXXXX
+    args = message.text.split() if message.text else []
+    if len(args) > 1 and args[1].startswith("ref_"):
+        ref_code = args[1][4:].upper()
+        referrer = storage.get_user_by_referral_code(ref_code)
+        if referrer and referrer["id"] != uid:
+            applied = storage.apply_referral(uid, referrer["id"])
+            if applied:
+                try:
+                    from aiogram import Bot
+                    bot_obj = message.bot
+                    await bot_obj.send_message(
+                        referrer["id"],
+                        f"🎉 <b>Новый реферал!</b>\n\n"
+                        f"По вашей ссылке зарегистрировался новый пользователь.\n"
+                        f"Вам начислено <b>+2 бонусных теста</b>! 🎁",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
     is_registered = storage.is_web_registered(uid)
     is_pro = storage.is_pro(uid)
     banner = storage.get_banner()
@@ -342,8 +387,17 @@ async def handle_lite_url(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
 
-    ok, url_or_err = validate_target_url(message.text.strip())
+    raw_url = message.text.strip()
+    ok, url_or_err = validate_target_url(raw_url)
     if not ok:
+        if "заблокирован" in url_or_err or "суффикс" in url_or_err:
+            user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
+            sec = storage.track_blocked_attempt(uid, raw_url, url_or_err, user_ip)
+            await _notify_admin_blocked(message.bot, uid, raw_url, url_or_err,
+                                        user_ip, sec["action"], sec["attempts"])
+            if sec["action"] == "banned":
+                await message.answer("🚫 Вы заблокированы за попытку атаки защищённого ресурса.")
+                return
         await message.answer(f"Ошибка: {url_or_err}", reply_markup=cancel_kb())
         return
 
@@ -431,8 +485,17 @@ async def handle_pro_url(message: Message, state: FSMContext):
         await message.answer("Требуется PRO подписка.")
         return
 
-    ok, url_or_err = validate_target_url(message.text.strip())
+    raw_url = message.text.strip()
+    ok, url_or_err = validate_target_url(raw_url)
     if not ok:
+        if "заблокирован" in url_or_err or "суффикс" in url_or_err:
+            user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
+            sec = storage.track_blocked_attempt(uid, raw_url, url_or_err, user_ip)
+            await _notify_admin_blocked(message.bot, uid, raw_url, url_or_err,
+                                        user_ip, sec["action"], sec["attempts"])
+            if sec["action"] == "banned":
+                await message.answer("🚫 Вы заблокированы за попытку атаки защищённого ресурса.")
+                return
         await message.answer(f"Ошибка: {url_or_err}", reply_markup=cancel_kb())
         return
 
@@ -441,6 +504,13 @@ async def handle_pro_url(message: Message, state: FSMContext):
     intensity = intensity_map.get(duration, "high")
 
     user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
+    progress_msg = await message.answer(
+        f"⚡ <b>DDoS PRO запущен</b>\n\n"
+        f"🎯 <code>{escape(url_or_err)}</code>\n"
+        f"⏱ Длительность: {duration} сек\n\n"
+        "Прогресс будет обновляться каждые 10 секунд...",
+        parse_mode=ParseMode.HTML,
+    )
     enqueue_task(uid, "load_test", {
         "target_url": url_or_err,
         "mode": "pro",
@@ -448,6 +518,8 @@ async def handle_pro_url(message: Message, state: FSMContext):
         "intensity": intensity,
         "method_type": "auto",
         "user_ip": user_ip,
+        "progress_chat_id": message.chat.id,
+        "progress_msg_id": progress_msg.message_id,
     })
 
     label_map = {60: "умеренный", 120: "высокий", 180: "ультра", 300: "максимум"}
@@ -673,8 +745,17 @@ async def handle_flood_url(message: Message, state: FSMContext):
         await message.answer("Требуется PRO подписка.")
         return
 
-    ok, url_or_err = validate_target_url(message.text.strip())
+    raw_url = message.text.strip()
+    ok, url_or_err = validate_target_url(raw_url)
     if not ok:
+        if "заблокирован" in url_or_err or "суффикс" in url_or_err:
+            user_ip_f = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
+            sec = storage.track_blocked_attempt(uid, raw_url, url_or_err, user_ip_f)
+            await _notify_admin_blocked(message.bot, uid, raw_url, url_or_err,
+                                        user_ip_f, sec["action"], sec["attempts"])
+            if sec["action"] == "banned":
+                await message.answer("🚫 Вы заблокированы за попытку атаки защищённого ресурса.")
+                return
         await message.answer(f"Ошибка: {url_or_err}", reply_markup=cancel_kb())
         return
 
@@ -683,6 +764,13 @@ async def handle_flood_url(message: Message, state: FSMContext):
     intensity = intensity_map.get(duration, "ultra")
 
     user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
+    progress_msg = await message.answer(
+        f"💥 <b>DDoS Flood запущен</b>\n\n"
+        f"🎯 <code>{escape(url_or_err)}</code>\n"
+        f"⏱ Длительность: {duration} сек\n\n"
+        "Прогресс будет обновляться каждые 10 секунд...",
+        parse_mode=ParseMode.HTML,
+    )
     enqueue_task(uid, "load_test", {
         "target_url": url_or_err,
         "mode": "flood",
@@ -690,17 +778,180 @@ async def handle_flood_url(message: Message, state: FSMContext):
         "intensity": intensity,
         "method_type": "auto",
         "user_ip": user_ip,
+        "progress_chat_id": message.chat.id,
+        "progress_msg_id": progress_msg.message_id,
     })
 
     label_map = {60: "агрессивный", 120: "экстремальный", 180: "максимум"}
     level = label_map.get(duration, "максимум")
 
+
+# ─── 📋 История тестов ────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "my_tests")
+async def cb_my_tests(cb: CallbackQuery):
+    uid = cb.from_user.id
+    reports = storage.get_user_reports(uid, limit=8)
+    if not reports:
+        await _delete_and_send(
+            cb,
+            "📋 <b>Мои тесты</b>\n\nУ вас ещё нет сохранённых тестов и анализов.\n"
+            "Запустите тест — отчёт появится здесь.",
+            reply_markup=back_to_menu_kb(),
+        )
+    else:
+        await _delete_and_send(
+            cb,
+            f"📋 <b>Мои тесты</b>\n\nПоследние {len(reports)} отчётов — нажмите для открытия:",
+            reply_markup=my_tests_kb(reports, DOMAIN),
+        )
+    await cb.answer()
+
+
+# ─── 🔗 Реферальная система ───────────────────────────────────────────────────
+
+@router.message(Command("ref"))
+async def cmd_ref(message: Message):
+    uid = message.from_user.id
+    await _show_referral(message, uid)
+
+
+@router.callback_query(F.data == "my_ref")
+async def cb_my_ref(cb: CallbackQuery):
+    uid = cb.from_user.id
+    await _delete_and_send(cb, "⏳")
+    await _show_referral(cb.message, uid)
+    await cb.answer()
+
+
+async def _show_referral(msg_obj, uid: int):
+    code = storage.get_or_create_referral_code(uid)
+    stats = storage.get_referral_stats(uid)
+
+    from bot.config import BOT_TOKEN
+    import re
+    bot_username_raw = msg_obj.bot.id if hasattr(msg_obj, "bot") else None
+    try:
+        bot_info = await msg_obj.bot.get_me()
+        bot_username = bot_info.username
+    except Exception:
+        bot_username = "your_bot"
+
+    ref_link = f"https://t.me/{bot_username}?start=ref_{code}"
+    text = (
+        f"🔗 <b>Реферальная программа</b>\n\n"
+        f"Приглашайте друзей — за каждого получаете <b>+2 бесплатных теста</b>!\n\n"
+        f"Ваша ссылка:\n<code>{ref_link}</code>\n\n"
+        f"📊 Приглашено: <b>{stats['count']}</b> человек\n"
+        f"🎁 Бонусных тестов: <b>{stats['bonus']}</b>\n\n"
+        "Бонусные тесты расходуются автоматически вместо дневного лимита."
+    )
+    try:
+        await msg_obj.edit_text(text, parse_mode=ParseMode.HTML,
+                                reply_markup=referral_kb(ref_link),
+                                disable_web_page_preview=True)
+    except Exception:
+        await msg_obj.answer(text, parse_mode=ParseMode.HTML,
+                             reply_markup=referral_kb(ref_link),
+                             disable_web_page_preview=True)
+
+
+# ─── ⏱ Планировщик тестов ────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "schedule_test")
+async def cb_schedule_test(cb: CallbackQuery):
+    uid = cb.from_user.id
+    if not storage.is_pro(uid):
+        await cb.answer("Планировщик доступен только для PRO.", show_alert=True)
+        return
+    await _delete_and_send(
+        cb,
+        "⏱ <b>Планировщик тестов</b>\n\n"
+        "Выберите тип теста, который нужно запустить по расписанию:",
+        reply_markup=schedule_mode_kb(),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sched_mode:"))
+async def cb_sched_mode(cb: CallbackQuery):
+    mode = cb.data.split(":")[1]
+    await _delete_and_send(
+        cb,
+        f"⏱ <b>Планировщик — {'PRO' if mode == 'pro' else 'Flood'} тест</b>\n\n"
+        "Через сколько запустить тест?",
+        reply_markup=schedule_delay_kb(mode),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sched_delay:"))
+async def cb_sched_delay(cb: CallbackQuery, state: FSMContext):
+    _, mode, minutes_str = cb.data.split(":")
+    minutes = int(minutes_str)
+    await state.set_state(UserStates.schedule_waiting_url)
+    await state.update_data(sched_mode=mode, sched_minutes=minutes)
+
+    time_label = {30: "30 минут", 60: "1 час", 180: "3 часа", 360: "6 часов"}.get(minutes, f"{minutes} мин")
+    await _delete_and_send(
+        cb,
+        f"⏱ Запуск через <b>{time_label}</b>\n\nОтправьте URL цели:",
+        reply_markup=cancel_kb(),
+    )
+    await cb.answer()
+
+
+@router.message(UserStates.schedule_waiting_url)
+async def handle_schedule_url(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    uid = message.from_user.id
+
+    if not storage.is_pro(uid):
+        await message.answer("Требуется PRO подписка.")
+        return
+
+    raw_url = message.text.strip()
+    ok, url_or_err = validate_target_url(raw_url)
+    if not ok:
+        if "заблокирован" in url_or_err or "суффикс" in url_or_err:
+            user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
+            sec = storage.track_blocked_attempt(uid, raw_url, url_or_err, user_ip)
+            await _notify_admin_blocked(message.bot, uid, raw_url, url_or_err,
+                                        user_ip, sec["action"], sec["attempts"])
+            if sec["action"] == "banned":
+                await message.answer("🚫 Вы заблокированы за попытку атаки защищённого ресурса.")
+                return
+        await message.answer(f"Ошибка: {url_or_err}", reply_markup=cancel_kb())
+        return
+
+    from datetime import timedelta
+    mode    = data.get("sched_mode", "pro")
+    minutes = data.get("sched_minutes", 60)
+    run_at  = datetime.utcnow() + timedelta(minutes=minutes)
+
+    intensity_map = {"pro": "high", "flood": "ultra"}
+    intensity = intensity_map.get(mode, "high")
+    duration  = 120 if mode == "pro" else 60
+
+    user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
+    enqueue_task(uid, "load_test", {
+        "target_url": url_or_err,
+        "mode": mode,
+        "duration": duration,
+        "intensity": intensity,
+        "method_type": "auto",
+        "user_ip": user_ip,
+    }, scheduled_for=run_at)
+
+    time_label = {30: "30 минут", 60: "1 час", 180: "3 часа", 360: "6 часов"}.get(minutes, f"{minutes} мин")
+    run_at_str = run_at.strftime("%H:%M UTC")
     await message.answer(
-        f"<b>DDoS Flood запущен</b>\n\n"
-        f"Цель: <code>{escape(url_or_err)}</code>\n"
-        f"Длительность: {duration} сек / <b>{level}</b>\n"
-        f"Метод: авто\n\n"
-        "Отчёт придёт по завершении.",
+        f"⏱ <b>Тест запланирован!</b>\n\n"
+        f"🎯 <code>{escape(url_or_err)}</code>\n"
+        f"🔧 Режим: <b>{'PRO' if mode == 'pro' else 'Flood'}</b>\n"
+        f"⏰ Запуск в: <b>{run_at_str}</b> (через {time_label})\n\n"
+        "Уведомление придёт когда тест начнётся и завершится.",
         parse_mode=ParseMode.HTML,
         reply_markup=back_to_menu_kb(),
     )

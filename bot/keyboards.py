@@ -12,11 +12,18 @@ def main_menu_kb(has_sub: bool = False, is_registered: bool = False) -> InlineKe
     if is_registered:
         if has_sub:
             rows.append([InlineKeyboardButton(text="⚡ DDoS PRO", callback_data="stress_pro")])
-            rows.append([InlineKeyboardButton(text="💥 DDoS Flood", callback_data="stress_flood")])
+            rows.append([
+                InlineKeyboardButton(text="💥 DDoS Flood", callback_data="stress_flood"),
+                InlineKeyboardButton(text="⏱ Запланировать", callback_data="schedule_test"),
+            ])
         else:
             rows.append([InlineKeyboardButton(text="⚡ DDoS Lite (бесплатно)", callback_data="stress_lite")])
     else:
         rows.append([InlineKeyboardButton(text="⚡ DDoS Lite (регистрация)", callback_data="need_reg")])
+    rows.append([
+        InlineKeyboardButton(text="📋 Мои тесты", callback_data="my_tests"),
+        InlineKeyboardButton(text="🔗 Рефералы", callback_data="my_ref"),
+    ])
     rows.append([
         InlineKeyboardButton(text="📊 Статус", callback_data="status"),
         InlineKeyboardButton(text="👑 PRO подписка" if not has_sub else "♻️ Продлить PRO", callback_data="sub"),
@@ -92,6 +99,46 @@ def payment_kb(pay_url: str, invoice_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Оплатить через CryptoBot", url=pay_url)],
         [InlineKeyboardButton(text="Проверить оплату", callback_data=f"paychk:{invoice_id}")],
         [InlineKeyboardButton(text="Отмена", callback_data="sub")],
+    ])
+
+
+def my_tests_kb(reports: list, domain: str) -> InlineKeyboardMarkup:
+    rows = []
+    icons = {"load_test": "⚡", "analysis": "🔍"}
+    for r in reports[:8]:
+        icon = icons.get(r.get("report_type", ""), "📋")
+        url_short = (r.get("target_url") or "—")[:28]
+        date_s = r.get("created_at", "")
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {url_short} · {date_s}",
+            url=f"https://{domain}/report/{r['report_id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="В меню", callback_data="menu_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def referral_kb(ref_link: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}")],
+        [InlineKeyboardButton(text="В меню", callback_data="menu_back")],
+    ])
+
+
+def schedule_mode_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡ PRO тест",   callback_data="sched_mode:pro")],
+        [InlineKeyboardButton(text="💥 Flood тест", callback_data="sched_mode:flood")],
+        [InlineKeyboardButton(text="Назад", callback_data="menu_back")],
+    ])
+
+
+def schedule_delay_kb(mode: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Через 30 минут", callback_data=f"sched_delay:{mode}:30")],
+        [InlineKeyboardButton(text="Через 1 час",    callback_data=f"sched_delay:{mode}:60")],
+        [InlineKeyboardButton(text="Через 3 часа",   callback_data=f"sched_delay:{mode}:180")],
+        [InlineKeyboardButton(text="Через 6 часов",  callback_data=f"sched_delay:{mode}:360")],
+        [InlineKeyboardButton(text="Назад", callback_data="schedule_test")],
     ])
 
 

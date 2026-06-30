@@ -25,7 +25,7 @@ async def run_bot():
     from bot.db import init_db
     from bot.storage import storage
     from bot.utils.cryptobot import crypto_api
-    from bot.utils.traffic_worker import task_queue_worker
+    from bot.utils.traffic_worker import task_queue_worker, scheduled_task_worker
     from bot.handlers import admin, payment, user
 
     init_db()
@@ -82,6 +82,7 @@ async def run_bot():
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
         payment_poller(),
         task_queue_worker(bot=bot),
+        scheduled_task_worker(bot=bot),
     )
 
 
