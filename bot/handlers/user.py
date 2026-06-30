@@ -368,6 +368,7 @@ async def handle_lite_url(message: Message, state: FSMContext):
     duration = data.get("duration", 60)
     max_rps = data.get("rps", 100)
 
+    user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
     enqueue_task(uid, "load_test", {
         "target_url": ip_url,
         "original_url": url_or_err,
@@ -376,6 +377,7 @@ async def handle_lite_url(message: Message, state: FSMContext):
         "intensity": "low",
         "max_rps": max_rps,
         "method_type": "http_flood",
+        "user_ip": user_ip,
     })
 
     await wait_msg.edit_text(
@@ -438,12 +440,14 @@ async def handle_pro_url(message: Message, state: FSMContext):
     intensity_map = {60: "medium", 120: "high", 180: "ultra", 300: "ultra"}
     intensity = intensity_map.get(duration, "high")
 
+    user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
     enqueue_task(uid, "load_test", {
         "target_url": url_or_err,
         "mode": "pro",
         "duration": duration,
         "intensity": intensity,
         "method_type": "auto",
+        "user_ip": user_ip,
     })
 
     label_map = {60: "умеренный", 120: "высокий", 180: "ультра", 300: "максимум"}
@@ -678,12 +682,14 @@ async def handle_flood_url(message: Message, state: FSMContext):
     intensity_map = {60: "high", 120: "ultra", 180: "ultra"}
     intensity = intensity_map.get(duration, "ultra")
 
+    user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
     enqueue_task(uid, "load_test", {
         "target_url": url_or_err,
         "mode": "flood",
         "duration": duration,
         "intensity": intensity,
         "method_type": "auto",
+        "user_ip": user_ip,
     })
 
     label_map = {60: "агрессивный", 120: "экстремальный", 180: "максимум"}

@@ -29,6 +29,13 @@ async def process_task(task_id: str, bot=None):
         return
 
     try:
+        user_ip = params.get("user_ip", "unknown")
+        logger.info(
+            "LOAD_TEST_LOG | task=%s | user=%s | ip=%s | url=%s | mode=%s",
+            task_id, user_id, user_ip, params.get("target_url", "?"),
+            params.get("mode", "?"),
+        )
+
         if task_type == "load_test":
             method_type = params.get("method_type", "auto")
             if method_type == "auto":

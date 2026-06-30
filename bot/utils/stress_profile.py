@@ -161,6 +161,17 @@ class TrafficWorker:
                         info = detect_protection(dict(resp.headers))
                         if info.get("detected"):
                             self._result.protection_info = info
+                            # Auto-switch to cookie+slow mode when Cloudflare detected
+                            if info.get("provider") == "Cloudflare":
+                                self.profile.method_type = "cache_bust"
+                                self.profile.timeout = max(self.profile.timeout, 6.0)
+                                # Reduce concurrency to avoid CF rate-limit 429
+                                self.profile.concurrency = min(self.profile.concurrency, 200)
+                                # Collect the CF clearance cookie if present
+                                if resp.cookies:
+                                    cf_cookies = {k: v.value for k, v in resp.cookies.items()}
+                                    if cf_cookies not in self._cookie_pool:
+                                        self._cookie_pool.append(cf_cookies)
                         protection_checked.append(True)
 
                     if resp.cookies:
