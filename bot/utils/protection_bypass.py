@@ -124,7 +124,6 @@ ACCEPT_ENCODINGS = [
     "identity",
 ]
 
-
 CHROME_VERSIONS = list(range(110, 126))
 FIREFOX_VERSIONS = list(range(109, 127))
 
@@ -145,7 +144,34 @@ _REFERERS = [
     "https://duckduckgo.com/",
     "https://t.co/",
     "https://vk.com/",
+    "https://www.facebook.com/",
+    "https://twitter.com/",
+    "https://reddit.com/",
+    "https://www.instagram.com/",
+    "https://www.youtube.com/",
+    "https://www.linkedin.com/",
 ]
+
+
+def get_spoof_ip() -> str:
+    """Generate a random public IP for X-Forwarded-For spoofing."""
+    while True:
+        a = random.randint(1, 254)
+        b = random.randint(0, 254)
+        c = random.randint(0, 254)
+        d = random.randint(1, 254)
+        # Exclude private ranges: 10.x, 172.16-31.x, 192.168.x
+        if a == 10:
+            continue
+        if a == 172 and 16 <= b <= 31:
+            continue
+        if a == 192 and b == 168:
+            continue
+        if a == 127:
+            continue
+        if a == 0:
+            continue
+        return f"{a}.{b}.{c}.{d}"
 
 
 def get_random_headers(extra: Optional[dict] = None) -> dict:
@@ -169,7 +195,7 @@ def get_random_headers(extra: Optional[dict] = None) -> dict:
         "Accept-Language":          random.choice(ACCEPT_LANGUAGES),
         "Accept-Encoding":          "gzip, deflate, br",
         "Connection":               "keep-alive",
-        "Cache-Control":            random.choice(["no-cache", "max-age=0"]),
+        "Cache-Control":            random.choice(["no-cache", "max-age=0", "no-store"]),
         "Upgrade-Insecure-Requests":"1",
     }
 
@@ -191,9 +217,24 @@ def get_random_headers(extra: Optional[dict] = None) -> dict:
         headers["Sec-Fetch-User"] = "?1"
         headers["DNT"]            = random.choice(["1", "0"])
 
-    # Realistic referer (35% of requests look like they came from a search engine)
-    if random.random() < 0.35:
+    # Referer from realistic sources (40% of requests)
+    if random.random() < 0.40:
         headers["Referer"] = random.choice(_REFERERS)
+
+    # X-Forwarded-For spoofing — makes server think traffic comes from many IPs
+    # Use chain of fake IPs to look like it passed through CDN/proxies
+    chain_len = random.randint(1, 3)
+    ips = ", ".join(get_spoof_ip() for _ in range(chain_len))
+    headers["X-Forwarded-For"] = ips
+    headers["X-Real-IP"] = get_spoof_ip()
+
+    # Occasionally add extra bypass headers
+    if random.random() < 0.3:
+        headers["X-Originating-IP"] = get_spoof_ip()
+    if random.random() < 0.2:
+        headers["CF-Connecting-IP"] = get_spoof_ip()
+    if random.random() < 0.2:
+        headers["True-Client-IP"] = get_spoof_ip()
 
     if extra:
         headers.update(extra)
@@ -212,7 +253,7 @@ def detect_protection(response_headers: dict) -> dict:
         result.update({"detected": True, "provider": "Akamai"})
         result["details"].append("Akamai заголовки обнаружены")
 
-    elif "x-sucuri-id" in h:
+    elif "x-sucuri-id" in h or "sucuri" in h.get("server", "").lower():
         result.update({"detected": True, "provider": "Sucuri"})
 
     elif "x-ddos-protection" in h or "ddos-guard" in h.get("server", "").lower():
@@ -220,6 +261,15 @@ def detect_protection(response_headers: dict) -> dict:
 
     elif "x-protected-by" in h:
         result.update({"detected": True, "provider": h["x-protected-by"]})
+
+    elif "incapsula" in h.get("x-iinfo", "").lower() or "incapsula" in h.get("server", "").lower():
+        result.update({"detected": True, "provider": "Imperva/Incapsula"})
+
+    elif "x-cache" in h and "imperva" in h.get("x-cache", "").lower():
+        result.update({"detected": True, "provider": "Imperva"})
+
+    elif "fastly" in h.get("via", "").lower() or "fastly" in h.get("x-served-by", "").lower():
+        result.update({"detected": True, "provider": "Fastly CDN"})
 
     return result
 

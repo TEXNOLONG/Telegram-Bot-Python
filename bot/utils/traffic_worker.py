@@ -56,6 +56,7 @@ async def process_task(task_id: str, bot=None):
                 concurrency=params.get("concurrency", 50),
                 intensity=params.get("intensity", "medium"),
                 method_type=method_type,
+                use_proxies=params.get("use_proxies", False),
             )
 
             # Build live-progress callback if caller provided message location
