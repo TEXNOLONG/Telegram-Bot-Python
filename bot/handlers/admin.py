@@ -281,6 +281,7 @@ async def cb_btext(cb: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.broadcast_text)
 async def handle_broadcast_text(message: Message, state: FSMContext, bot: Bot):
+    import asyncio
     await state.clear()
     uids = storage.get_all_user_ids()
     text = message.text
@@ -291,6 +292,7 @@ async def handle_broadcast_text(message: Message, state: FSMContext, bot: Bot):
             ok += 1
         except Exception:
             fail += 1
+        await asyncio.sleep(0.05)
     storage.log_admin_action(message.from_user.id, f"Рассылка: {ok} успешно, {fail} ошибок")
     await message.answer(f"📢 Рассылка: ✅ {ok} / ❌ {fail}", reply_markup=admin_back_kb())
 
@@ -311,6 +313,7 @@ async def handle_broadcast_photo(message: Message, state: FSMContext):
 
 @router.message(AdminStates.broadcast_caption)
 async def handle_broadcast_caption(message: Message, state: FSMContext, bot: Bot):
+    import asyncio
     data = await state.get_data()
     await state.clear()
     photo_id = data.get("photo_id")
@@ -323,6 +326,7 @@ async def handle_broadcast_caption(message: Message, state: FSMContext, bot: Bot
             ok += 1
         except Exception:
             fail += 1
+        await asyncio.sleep(0.05)
     storage.log_admin_action(message.from_user.id, f"Фото-рассылка: {ok}/{fail}")
     await message.answer(f"📢 Рассылка: ✅ {ok} / ❌ {fail}", reply_markup=admin_back_kb())
 

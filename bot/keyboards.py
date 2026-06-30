@@ -266,6 +266,52 @@ def confirm_kb(yes_cb: str, no_cb: str) -> InlineKeyboardMarkup:
     ]])
 
 
+def intensity_kb(duration: int) -> InlineKeyboardMarkup:
+    """Intensity selection for PRO test (step after duration)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 Низкий (Low)",    callback_data=f"pro_int:{duration}:low")],
+        [InlineKeyboardButton(text="🟡 Средний (Medium)", callback_data=f"pro_int:{duration}:medium")],
+        [InlineKeyboardButton(text="🟠 Высокий (High)",   callback_data=f"pro_int:{duration}:high")],
+        [InlineKeyboardButton(text="🔴 Ультра (Ultra)",   callback_data=f"pro_int:{duration}:ultra")],
+        [InlineKeyboardButton(text="Назад", callback_data="stress_pro")],
+    ])
+
+
+def flood_method_kb(duration: int) -> InlineKeyboardMarkup:
+    """Method selection for Flood test (step after duration)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 Авто (рекомендован)",  callback_data=f"flood_method:{duration}:auto")],
+        [InlineKeyboardButton(text="💥 Mixed (кеш+флуд)",     callback_data=f"flood_method:{duration}:mixed")],
+        [InlineKeyboardButton(text="🗃 Cache Bust",            callback_data=f"flood_method:{duration}:cache_bust")],
+        [InlineKeyboardButton(text="📦 HTTP Flood",            callback_data=f"flood_method:{duration}:http_flood")],
+        [InlineKeyboardButton(text="🐌 Slowloris",             callback_data=f"flood_method:{duration}:slowloris")],
+        [InlineKeyboardButton(text="📮 RUDY (slow POST)",      callback_data=f"flood_method:{duration}:rudy")],
+        [InlineKeyboardButton(text="📡 Range Amplify",         callback_data=f"flood_method:{duration}:range_amplify")],
+        [InlineKeyboardButton(text="🌐 DNS Flood",             callback_data=f"flood_method:{duration}:dns_flood")],
+        [InlineKeyboardButton(text="🔌 WebSocket Flood",       callback_data=f"flood_method:{duration}:websocket")],
+        [InlineKeyboardButton(text="Назад", callback_data="stress_flood")],
+    ])
+
+
+def test_url_prompt_kb(mode: str, use_proxies: bool) -> InlineKeyboardMarkup:
+    """URL prompt keyboard with proxy toggle button."""
+    proxy_text = "🌐 Прокси: ВКЛ ✅" if use_proxies else "🌐 Прокси: ВЫКЛ ❌"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=proxy_text,
+            callback_data=f"toggle_proxy:{mode}:{int(use_proxies)}",
+        )],
+        [InlineKeyboardButton(text="Отмена", callback_data="cancel")],
+    ])
+
+
+def stop_test_kb(task_id: str) -> InlineKeyboardMarkup:
+    """Stop button shown during an active test."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏹ Остановить тест", callback_data=f"stop_task:{task_id}")],
+    ])
+
+
 def admin_test_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Кастомный тест", callback_data="admin_custom_test")],

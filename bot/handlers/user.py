@@ -19,11 +19,12 @@ from bot.keyboards import (
     register_kb, stress_lite_kb, stress_pro_kb, stress_flood_kb,
     subscription_menu_kb, my_tests_kb, referral_kb,
     schedule_mode_kb, schedule_delay_kb,
+    intensity_kb, flood_method_kb, test_url_prompt_kb, stop_test_kb,
 )
 from bot.storage import storage
 from bot.utils.url_validator import validate_target_url
 from bot.utils.site_analyzer import analyze_site, format_report
-from bot.utils.traffic_worker import enqueue_task
+from bot.utils.traffic_worker import enqueue_task, cancel_task
 from bot.db import get_session
 from bot.models import Report
 
@@ -469,10 +470,91 @@ async def cb_stress_pro(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("pro:"))
 async def cb_pro_duration(cb: CallbackQuery, state: FSMContext):
     duration = int(cb.data.split(":")[1])
-    await state.set_state(UserStates.stress_pro_waiting_url)
     await state.update_data(duration=duration)
-    await _delete_and_send(cb, "Отправьте URL или домен:", reply_markup=cancel_kb())
+    await _delete_and_send(
+        cb,
+        f"<b>DDoS PRO — {duration} сек</b>\n\nВыберите интенсивность:",
+        reply_markup=intensity_kb(duration),
+    )
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("pro_int:"))
+async def cb_pro_intensity(cb: CallbackQuery, state: FSMContext):
+    _, duration_s, intensity = cb.data.split(":")
+    duration = int(duration_s)
+    await state.set_state(UserStates.stress_pro_waiting_url)
+    await state.update_data(duration=duration, intensity=intensity, use_proxies=False)
+    int_labels = {"low": "🟢 Низкий", "medium": "🟡 Средний", "high": "🟠 Высокий", "ultra": "🔴 Ультра"}
+    await _delete_and_send(
+        cb,
+        f"<b>DDoS PRO</b>\n\n"
+        f"⏱ Длительность: <b>{duration} сек</b>\n"
+        f"📊 Интенсивность: <b>{int_labels.get(intensity, intensity)}</b>\n\n"
+        "Отправьте URL или домен цели.\n"
+        "Прокси можно включить кнопкой ниже:",
+        reply_markup=test_url_prompt_kb("pro", False),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("toggle_proxy:"))
+async def cb_toggle_proxy(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    mode = parts[1]
+    current = bool(int(parts[2]))
+    new_val = not current
+    await state.update_data(use_proxies=new_val)
+    data = await state.get_data()
+    duration = data.get("duration", 60)
+    intensity = data.get("intensity", "high")
+    method = data.get("method_type", "auto")
+    int_labels = {"low": "🟢 Низкий", "medium": "🟡 Средний", "high": "🟠 Высокий", "ultra": "🔴 Ультра"}
+    method_labels = {
+        "auto": "Авто", "mixed": "Mixed", "cache_bust": "Cache Bust",
+        "http_flood": "HTTP Flood", "slowloris": "Slowloris", "rudy": "RUDY",
+        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood", "websocket": "WebSocket",
+    }
+    if mode == "pro":
+        text = (
+            f"<b>DDoS PRO</b>\n\n"
+            f"⏱ Длительность: <b>{duration} сек</b>\n"
+            f"📊 Интенсивность: <b>{int_labels.get(intensity, intensity)}</b>\n\n"
+            "Отправьте URL или домен цели.\n"
+            "Прокси можно включить кнопкой ниже:"
+        )
+    else:
+        text = (
+            f"<b>DDoS Flood</b>\n\n"
+            f"⏱ Длительность: <b>{duration} сек</b>\n"
+            f"🔫 Метод: <b>{method_labels.get(method, method)}</b>\n\n"
+            "Отправьте URL или домен цели.\n"
+            "Прокси можно включить кнопкой ниже:"
+        )
+    try:
+        await cb.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=test_url_prompt_kb(mode, new_val),
+        )
+    except Exception:
+        pass
+    status = "включены ✅" if new_val else "выключены ❌"
+    await cb.answer(f"Прокси {status}", show_alert=False)
+
+
+@router.callback_query(F.data.startswith("stop_task:"))
+async def cb_stop_task(cb: CallbackQuery):
+    task_id = cb.data.split(":", 1)[1]
+    found = cancel_task(task_id)
+    if found:
+        await cb.answer("⏹ Тест остановлен", show_alert=True)
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    else:
+        await cb.answer("Тест уже завершён или не найден.", show_alert=True)
 
 
 @router.message(UserStates.stress_pro_waiting_url)
@@ -500,37 +582,37 @@ async def handle_pro_url(message: Message, state: FSMContext):
         return
 
     duration = data.get("duration", 120)
-    intensity_map = {60: "medium", 120: "high", 180: "ultra", 300: "ultra"}
-    intensity = intensity_map.get(duration, "high")
+    intensity = data.get("intensity", "high")
+    use_proxies = data.get("use_proxies", False)
+
+    int_labels = {"low": "🟢 Низкий", "medium": "🟡 Средний", "high": "🟠 Высокий", "ultra": "🔴 Ультра"}
+    proxy_label = "Вкл ✅" if use_proxies else "Выкл ❌"
 
     user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
     progress_msg = await message.answer(
         f"⚡ <b>DDoS PRO запущен</b>\n\n"
         f"🎯 <code>{escape(url_or_err)}</code>\n"
-        f"⏱ Длительность: {duration} сек\n\n"
-        "Прогресс будет обновляться каждые 10 секунд...",
+        f"⏱ Длительность: <b>{duration} сек</b>\n"
+        f"📊 Интенсивность: <b>{int_labels.get(intensity, intensity)}</b>\n"
+        f"🌐 Прокси: {proxy_label}\n\n"
+        "Прогресс обновляется каждые 10 секунд...",
         parse_mode=ParseMode.HTML,
     )
-    enqueue_task(uid, "load_test", {
+    task_id = enqueue_task(uid, "load_test", {
         "target_url": url_or_err,
         "mode": "pro",
         "duration": duration,
         "intensity": intensity,
         "method_type": "auto",
+        "use_proxies": use_proxies,
         "user_ip": user_ip,
         "progress_chat_id": message.chat.id,
         "progress_msg_id": progress_msg.message_id,
     })
-
-    label_map = {60: "умеренный", 120: "высокий", 180: "ультра", 300: "максимум"}
-    level = label_map.get(duration, "высокий")
-
     await message.answer(
-        f"<b>DDoS PRO запущен</b>\n\n"
-        f"Цель: <code>{escape(url_or_err)}</code>\n"
-        f"Длительность: {duration} сек / <b>{level}</b>\n"
-        f"Метод: авто (бот анализирует цель)\n\n"
-        "Отчёт придёт по завершении.",
+        f"✅ <b>DDoS PRO в очереди!</b>\n\n"
+        f"🎯 <code>{escape(url_or_err)}</code>\n"
+        f"Отчёт и статистика придут по завершении.",
         parse_mode=ParseMode.HTML,
         reply_markup=back_to_menu_kb(),
     )
@@ -546,9 +628,8 @@ async def cb_stress_flood(cb: CallbackQuery):
         return
     await _delete_and_send(
         cb,
-        "<b>DDoS Flood</b>\n\n"
-        "Агрессивный режим. Максимальный поток запросов.\n"
-        "Бот автоматически определит лучшую стратегию.\n\n"
+        "<b>💥 DDoS Flood</b>\n\n"
+        "Агрессивный режим с максимальным потоком запросов.\n\n"
         "Выберите длительность:",
         reply_markup=stress_flood_kb(),
     )
@@ -558,9 +639,35 @@ async def cb_stress_flood(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("flood:"))
 async def cb_flood_duration(cb: CallbackQuery, state: FSMContext):
     duration = int(cb.data.split(":")[1])
-    await state.set_state(UserStates.stress_flood_waiting_url)
     await state.update_data(duration=duration)
-    await _delete_and_send(cb, "Отправьте URL или домен:", reply_markup=cancel_kb())
+    await _delete_and_send(
+        cb,
+        f"<b>💥 DDoS Flood — {duration} сек</b>\n\nВыберите метод атаки:",
+        reply_markup=flood_method_kb(duration),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("flood_method:"))
+async def cb_flood_method(cb: CallbackQuery, state: FSMContext):
+    _, duration_s, method = cb.data.split(":", 2)
+    duration = int(duration_s)
+    await state.set_state(UserStates.stress_flood_waiting_url)
+    await state.update_data(duration=duration, method_type=method, use_proxies=False)
+    method_labels = {
+        "auto": "Авто", "mixed": "Mixed", "cache_bust": "Cache Bust",
+        "http_flood": "HTTP Flood", "slowloris": "Slowloris", "rudy": "RUDY",
+        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood", "websocket": "WebSocket",
+    }
+    await _delete_and_send(
+        cb,
+        f"<b>💥 DDoS Flood</b>\n\n"
+        f"⏱ Длительность: <b>{duration} сек</b>\n"
+        f"🔫 Метод: <b>{method_labels.get(method, method)}</b>\n\n"
+        "Отправьте URL или домен цели.\n"
+        "Прокси можно включить кнопкой ниже:",
+        reply_markup=test_url_prompt_kb("flood", False),
+    )
     await cb.answer()
 
 
@@ -760,30 +867,45 @@ async def handle_flood_url(message: Message, state: FSMContext):
         return
 
     duration = data.get("duration", 60)
-    intensity_map = {60: "high", 120: "ultra", 180: "ultra"}
-    intensity = intensity_map.get(duration, "ultra")
+    method_type = data.get("method_type", "auto")
+    use_proxies = data.get("use_proxies", False)
+    intensity = "ultra"
+
+    method_labels = {
+        "auto": "Авто", "mixed": "Mixed", "cache_bust": "Cache Bust",
+        "http_flood": "HTTP Flood", "slowloris": "Slowloris", "rudy": "RUDY",
+        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood", "websocket": "WebSocket",
+    }
+    proxy_label = "Вкл ✅" if use_proxies else "Выкл ❌"
 
     user_ip = (storage.get_user(uid) or {}).get("ip_address") or "unknown"
     progress_msg = await message.answer(
         f"💥 <b>DDoS Flood запущен</b>\n\n"
         f"🎯 <code>{escape(url_or_err)}</code>\n"
-        f"⏱ Длительность: {duration} сек\n\n"
-        "Прогресс будет обновляться каждые 10 секунд...",
+        f"⏱ Длительность: <b>{duration} сек</b>\n"
+        f"🔫 Метод: <b>{method_labels.get(method_type, method_type)}</b>\n"
+        f"🌐 Прокси: {proxy_label}\n\n"
+        "Прогресс обновляется каждые 10 секунд...",
         parse_mode=ParseMode.HTML,
     )
-    enqueue_task(uid, "load_test", {
+    task_id = enqueue_task(uid, "load_test", {
         "target_url": url_or_err,
         "mode": "flood",
         "duration": duration,
         "intensity": intensity,
-        "method_type": "auto",
+        "method_type": method_type,
+        "use_proxies": use_proxies,
         "user_ip": user_ip,
         "progress_chat_id": message.chat.id,
         "progress_msg_id": progress_msg.message_id,
     })
-
-    label_map = {60: "агрессивный", 120: "экстремальный", 180: "максимум"}
-    level = label_map.get(duration, "максимум")
+    await message.answer(
+        f"✅ <b>DDoS Flood в очереди!</b>\n\n"
+        f"🎯 <code>{escape(url_or_err)}</code>\n"
+        "Отчёт и статистика придут по завершении.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=back_to_menu_kb(),
+    )
 
 
 # ─── 📋 История тестов ────────────────────────────────────────────────────────

