@@ -513,7 +513,8 @@ async def cb_toggle_proxy(cb: CallbackQuery, state: FSMContext):
     method_labels = {
         "auto": "Авто", "mixed": "Mixed", "cache_bust": "Cache Bust",
         "http_flood": "HTTP Flood", "slowloris": "Slowloris", "rudy": "RUDY",
-        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood", "websocket": "WebSocket",
+        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood",
+        "websocket": "WebSocket", "cc": "CC Attack (L7)",
     }
     if mode == "pro":
         text = (
@@ -657,7 +658,8 @@ async def cb_flood_method(cb: CallbackQuery, state: FSMContext):
     method_labels = {
         "auto": "Авто", "mixed": "Mixed", "cache_bust": "Cache Bust",
         "http_flood": "HTTP Flood", "slowloris": "Slowloris", "rudy": "RUDY",
-        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood", "websocket": "WebSocket",
+        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood",
+        "websocket": "WebSocket", "cc": "CC Attack (L7)",
     }
     await _delete_and_send(
         cb,
@@ -874,7 +876,8 @@ async def handle_flood_url(message: Message, state: FSMContext):
     method_labels = {
         "auto": "Авто", "mixed": "Mixed", "cache_bust": "Cache Bust",
         "http_flood": "HTTP Flood", "slowloris": "Slowloris", "rudy": "RUDY",
-        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood", "websocket": "WebSocket",
+        "range_amplify": "Range Amplify", "dns_flood": "DNS Flood",
+        "websocket": "WebSocket", "cc": "CC Attack (L7)",
     }
     proxy_label = "Вкл ✅" if use_proxies else "Выкл ❌"
 

@@ -289,6 +289,7 @@ def flood_method_kb(duration: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📡 Range Amplify",         callback_data=f"flood_method:{duration}:range_amplify")],
         [InlineKeyboardButton(text="🌐 DNS Flood",             callback_data=f"flood_method:{duration}:dns_flood")],
         [InlineKeyboardButton(text="🔌 WebSocket Flood",       callback_data=f"flood_method:{duration}:websocket")],
+        [InlineKeyboardButton(text="💀 CC Attack (L7)",        callback_data=f"flood_method:{duration}:cc")],
         [InlineKeyboardButton(text="Назад", callback_data="stress_flood")],
     ])
 

